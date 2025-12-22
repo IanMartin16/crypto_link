@@ -34,5 +34,38 @@ public class ApiKeyRepository {
         return rows.stream().findFirst();
     }
 
+    public int insertKey(String apiKey, String plan, String status, OffsetDateTime expiresAt) {
+    return jdbc.update("""
+        insert into cryptolink_api_keys (api_key, plan, status, expires_at)
+        values (?, ?, ?, ?)
+        on conflict (api_key) do nothing
+    """, apiKey, plan, status, expiresAt);
+    }
+
+    public int updateStatus(String apiKey, String status) {
+        return jdbc.update("""
+            update cryptolink_api_keys
+            set status = ?
+            where api_key = ?
+        """, status, apiKey);
+    }
+
+    public int updatePlan(String apiKey, String plan) {
+        return jdbc.update("""
+            update cryptolink_api_keys
+            set plan = ?
+            where api_key = ?
+        """, plan, apiKey);
+    }
+
+    public int updateExpiresAt(String apiKey, OffsetDateTime expiresAt) {
+        return jdbc.update("""
+            update cryptolink_api_keys
+            set expires_at = ?
+            where api_key = ?
+        """, expiresAt, apiKey);
+    }
+
+
     public record ApiKeyRow(String apiKey, String plan, String status, OffsetDateTime expiresAt) {}
 }

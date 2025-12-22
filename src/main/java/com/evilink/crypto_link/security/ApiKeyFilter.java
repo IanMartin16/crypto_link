@@ -36,7 +36,15 @@ public class ApiKeyFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String p = request.getRequestURI();
+
+        String ctx = request.getContextPath();
+        if (ctx != null && !ctx.isBlank() && p.startsWith(ctx)) {
+             p = p.substring(ctx.length());
+        }
+
         return p.startsWith("/actuator")
+                || p.equals("/error")
+                || p.startsWith("/admin")          // ya con path normalizado
                 || p.equals("/v1/ping")
                 || p.equals("/v1/symbols")
                 || p.equals("/v1/fiats")
@@ -54,6 +62,11 @@ public class ApiKeyFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
 
         String path = request.getRequestURI();
+
+        if (path.startsWith("/admin")) {
+           filterChain.doFilter(request, response);
+           return;
+        }
 
         String apiKey = request.getHeader("x-api-key");
         ApiKeyStore.Plan plan = null;
