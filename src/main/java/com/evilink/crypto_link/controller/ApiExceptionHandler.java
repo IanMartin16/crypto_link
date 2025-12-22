@@ -1,8 +1,8 @@
 package com.evilink.crypto_link.controller;
 
-import org.springframework.dao.DataAccessException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -11,23 +11,30 @@ import java.util.Map;
 @RestControllerAdvice
 public class ApiExceptionHandler {
 
+    private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+
     @ExceptionHandler(ResponseStatusException.class)
-    public ResponseEntity<Map<String, Object>> status(ResponseStatusException e) {
-        return ResponseEntity
-                .status(e.getStatusCode())
-                .body(Map.of("ok", false, "error", e.getReason() == null ? "Error" : e.getReason()));
+    public Map<String, Object> responseStatus(ResponseStatusException e) {
+        // Respeta el status real (401, 404, etc.)
+        return Map.of("ok", false, "error", e.getReason() == null ? "Error" : e.getReason());
     }
 
-    @ExceptionHandler(DataAccessException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    @ExceptionHandler(IllegalArgumentException.class)
+    public Map<String, Object> badRequest(IllegalArgumentException e) {
+        return Map.of("ok", false, "error", e.getMessage());
+    }
+
+    @ResponseStatus(HttpStatus.BAD_GATEWAY)
+    @ExceptionHandler(UpstreamException.class)
+    public Map<String, Object> upstream(UpstreamException e) {
+        return Map.of("ok", false, "error", "Upstream provider error");
+    }
+
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-    public Map<String, Object> db(DataAccessException e) {
-        return Map.of("ok", false, "error", "Database error");
-    }
-
-    // (Opcional) deja esto SOLO si de verdad quieres “catch-all”
     @ExceptionHandler(Exception.class)
-    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-    public Map<String, Object> any(Exception e) {
+    public Map<String, Object> unexpected(Exception e) {
+        log.error("Unhandled error", e);
         return Map.of("ok", false, "error", "Internal Server Error");
     }
 }
