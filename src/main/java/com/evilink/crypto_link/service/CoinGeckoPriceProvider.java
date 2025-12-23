@@ -1,7 +1,9 @@
 package com.evilink.crypto_link.service;
 
+import com.evilink.crypto_link.exception.UpstreamException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.math.BigDecimal;
 import java.util.HashMap;
@@ -13,7 +15,6 @@ public class CoinGeckoPriceProvider {
 
     private final RestClient coingecko;
 
-    // mapping básico (luego lo ampliamos)
     private static final Map<String, String> SYMBOL_TO_ID = Map.of(
             "BTC", "bitcoin",
             "ETH", "ethereum"
@@ -36,15 +37,23 @@ public class CoinGeckoPriceProvider {
 
         if (ids.isBlank()) return Map.of();
 
-        // /simple/price?ids=bitcoin,ethereum&vs_currencies=usd
-        Map<String, Object> resp = coingecko.get()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/simple/price")
-                        .queryParam("ids", ids)
-                        .queryParam("vs_currencies", vs)
-                        .build())
-                .retrieve()
-                .body(Map.class);
+        Map<String, Object> resp;
+        try {
+            resp = coingecko.get()
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/simple/price")
+                            .queryParam("ids", ids)
+                            .queryParam("vs_currencies", vs)
+                            .build())
+                    .retrieve()
+                    .body(Map.class);
+        } catch (RestClientResponseException e) {
+            // aquí caen 4xx/5xx del proveedor (incluye 429)
+            throw new UpstreamException("CoinGecko HTTP " + e.getStatusCode().value(), e);
+        } catch (Exception e) {
+            // timeouts, DNS, conexión, parse raro, etc.
+            throw new UpstreamException("CoinGecko request failed", e);
+        }
 
         Map<String, BigDecimal> out = new HashMap<>();
         if (resp == null) return out;
