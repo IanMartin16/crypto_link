@@ -20,7 +20,7 @@ public class MetaController {
     }
 
     @Operation(security = {})
-    @GetMapping("/v1/symbols")
+    @GetMapping("/v1/meta/symbols")
     public Map<String, Object> symbols() {
         return Map.of(
                 "ok", true,
