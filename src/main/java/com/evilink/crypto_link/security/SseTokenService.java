@@ -27,7 +27,7 @@ public class SseTokenService {
     private final Map<String, Ctx> tokens = new ConcurrentHashMap<>();
 
     // token válido por 60s (puedes subirlo a 120s si quieres)
-    private final long ttlSeconds = 60;
+    private final long ttlSeconds = 180;
 
     public String mint(String apiKey, ApiKeyStore.Plan plan) {
         byte[] b = new byte[32];
