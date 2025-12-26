@@ -10,7 +10,6 @@ import org.springframework.web.server.ResponseStatusException;
 import java.security.SecureRandom;
 import java.time.OffsetDateTime;
 import java.util.Base64;
-import java.util.HashMap;
 import java.util.Map;
 
 @RestController

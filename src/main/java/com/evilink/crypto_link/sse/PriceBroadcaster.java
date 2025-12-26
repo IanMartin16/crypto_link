@@ -1,7 +1,6 @@
 package com.evilink.crypto_link.sse;
 
 import com.evilink.crypto_link.security.ApiKeyStore;
-import com.evilink.crypto_link.security.Plan;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 

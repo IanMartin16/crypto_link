@@ -2,7 +2,6 @@ package com.evilink.crypto_link.controller;
 
 import com.evilink.crypto_link.security.ApiKeyFilter;
 import com.evilink.crypto_link.security.ApiKeyStore;
-import com.evilink.crypto_link.security.Plan;
 import com.evilink.crypto_link.security.SseTokenService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.PostMapping;
