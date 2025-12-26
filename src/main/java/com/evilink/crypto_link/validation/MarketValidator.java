@@ -12,7 +12,7 @@ public class MarketValidator {
     private static final Set<String> ALLOWED_FIAT = Set.of("USD", "MXN");
 
     private static final Set<String> ALLOWED_SYMBOLS = Set.of(
-            "BTC", "ETH"
+            "BTC","ETH","SOL","XRP","ADA","DOGE"
             // luego metemos SOL, XRP, ADA, etc
     );
 
