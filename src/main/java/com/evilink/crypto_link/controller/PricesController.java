@@ -19,7 +19,7 @@ public class PricesController {
 
     @GetMapping("/v1/prices")
     public Map<String, Object> prices(
-            @RequestParam(defaultValue = "BTC,ETH") String symbols,
+            @RequestParam(defaultValue = "BTC,ETH,SOL,XRP,ADA,DOGE") String symbols,
             @RequestParam(defaultValue = "USD") String fiat
     ) {
         var list = validator.normalizeSymbols(symbols);
