@@ -34,7 +34,7 @@ public class MarketValidator {
       now = System.currentTimeMillis();
       if (now - cachedAtMs < ttlMs) return;
 
-      Set<String> s = symbols.listActiveSet().stream()
+      Set<String> s = symbols.listActive().stream()
           .filter(Objects::nonNull)
           .map(String::trim)
           .filter(x -> !x.isBlank())

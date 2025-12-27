@@ -30,16 +30,6 @@ public class MetaController {
     }
 
     @Operation(security = {})
-    @GetMapping("/v1/fiats")
-    public Map<String, Object> fiats() {
-        return Map.of(
-                "ok", true,
-                "fiats", validator.allowedFiats(),
-                "ts", OffsetDateTime.now().toString()
-        );
-    }
-
-    @Operation(security = {})
     @GetMapping("/v1/meta")
     public Map<String, Object> meta() {
         return Map.of(

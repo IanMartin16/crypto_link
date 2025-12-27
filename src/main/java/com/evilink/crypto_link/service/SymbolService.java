@@ -11,7 +11,7 @@ public class SymbolService {
 
   public SymbolService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
-  public Set<String> listActiveSet() {
+  public Set<String> listActive() {
     return new HashSet<>(jdbc.queryForList(
       "select symbol from cryptolink_symbols where active=true",
       String.class

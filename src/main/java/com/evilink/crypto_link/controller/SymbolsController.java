@@ -18,7 +18,7 @@ public class SymbolsController {
   @GetMapping("/v1/symbols")
   public Map<String, Object> list() {
 
-    var set = symbols.listActiveSet();
+    var set = symbols.listActive();
     var list = set.stream().sorted().toList();
 
     return Map.of("ok", true, "symbols", list);

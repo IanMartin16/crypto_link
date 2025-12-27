@@ -22,7 +22,7 @@ public class StreamController {
     @GetMapping(value = "/v1/stream/prices", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter streamPrices(
             HttpServletRequest req,
-            @RequestParam(defaultValue = "BTC,ETH,SOL,XRP,ADA,DOGE") String symbols,
+            @RequestParam(defaultValue = "BTC,ETH") String symbols,
             @RequestParam(defaultValue = "USD") String fiat
     ) throws Exception {
 
