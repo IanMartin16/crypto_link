@@ -5,6 +5,7 @@ import com.evilink.crypto_link.validation.MarketValidator;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import java.util.*;
 
 @RestController
 public class PricesController {
@@ -19,13 +20,13 @@ public class PricesController {
 
     @GetMapping("/v1/prices")
     public Map<String, Object> prices(
-            @RequestParam(defaultValue = "BTC,ETH,SOL,XRP,ADA,DOGE") String symbols,
+            @RequestParam(defaultValue = "BTC") String symbols,
             @RequestParam(defaultValue = "USD") String fiat
     ) {
-        var list = validator.normalizeSymbols(symbols);
-        var f = validator.normalizeFiat(fiat);
+        String sym = validator.normalizeSymbol(symbols);
+        String f = validator.normalizeFiat(fiat);
 
-        var r = priceService.getPrices(list, f);
+        var r = priceService.getPrices(List.of(sym), f);
 
         return Map.of(
                 "ok", true,

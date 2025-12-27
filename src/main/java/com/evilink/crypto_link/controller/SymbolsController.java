@@ -17,6 +17,10 @@ public class SymbolsController {
 
   @GetMapping("/v1/symbols")
   public Map<String, Object> list() {
-    return Map.of("ok", true, "symbols", symbols.listActive());
+
+    var set = symbols.listActiveSet();
+    var list = set.stream().sorted().toList();
+
+    return Map.of("ok", true, "symbols", list);
   }
 }

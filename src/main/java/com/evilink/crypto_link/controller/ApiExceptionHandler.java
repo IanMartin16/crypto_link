@@ -62,4 +62,14 @@ public class ApiExceptionHandler {
       "requestId", requestId(req)
     ));
   }
+
+  @ExceptionHandler(IllegalArgumentException.class)
+  public ResponseEntity<Map<String,Object>> badRequest(IllegalArgumentException e, HttpServletRequest req) {
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+      "ok", false,
+      "error", e.getMessage(),
+      "requestId", requestId(req)
+  )); 
+  }
+
 }

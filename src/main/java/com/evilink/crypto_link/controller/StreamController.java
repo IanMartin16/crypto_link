@@ -27,8 +27,11 @@ public class StreamController {
     ) throws Exception {
 
         String apiKey = (String) req.getAttribute(ApiKeyFilter.REQ_ATTR_API_KEY);
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new IllegalArgumentException("Missing apiKey in request context");
+        }
 
-        var list = validator.normalizeSymbols(symbols);
+        var list = validator.normalizeSymbolsCsv(symbols);
         var f = validator.normalizeFiat(fiat);
 
         return broadcaster.subscribe(apiKey, list, f);

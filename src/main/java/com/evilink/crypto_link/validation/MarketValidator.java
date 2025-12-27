@@ -1,5 +1,7 @@
 package com.evilink.crypto_link.validation;
 
+import com.evilink.crypto_link.service.SymbolService;
+import com.evilink.crypto_link.service.FiatService;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -8,56 +10,119 @@ import java.util.stream.Collectors;
 @Component
 public class MarketValidator {
 
-    // MVP whitelist (ampliamos luego)
-    private static final Set<String> ALLOWED_FIAT = Set.of("USD", "MXN");
+  private final SymbolService symbols;
+  private final FiatService fiats;
 
-    private static final Set<String> ALLOWED_SYMBOLS = Set.of(
-            "BTC","ETH","SOL","XRP","ADA","DOGE"
-            // luego metemos SOL, XRP, ADA, etc
-    );
+  // defaults “por si falla el refresh” o mientras levanta la app
+  private volatile Set<String> cachedSymbols = Set.of("BTC", "ETH");
+  private volatile Set<String> cachedFiats   = Set.of("USD", "MXN", "EUR");
+  private volatile long cachedAtMs = 0;
 
-    public String normalizeFiat(String fiat) {
-        String f = (fiat == null ? "" : fiat.trim().toUpperCase());
-        if (!ALLOWED_FIAT.contains(f)) {
-            throw new IllegalArgumentException("Unsupported fiat. Allowed: " + ALLOWED_FIAT);
-        }
-        return f;
+  private final long ttlMs = 30_000; // 30s cache
+
+  public MarketValidator(SymbolService symbols, FiatService fiats) {
+    this.symbols = symbols;
+    this.fiats = fiats;
+  }
+
+  private void refreshIfNeeded() {
+    long now = System.currentTimeMillis();
+    if (now - cachedAtMs < ttlMs) return;
+
+    synchronized (this) {
+      // double-check dentro del lock
+      now = System.currentTimeMillis();
+      if (now - cachedAtMs < ttlMs) return;
+
+      Set<String> s = symbols.listActiveSet().stream()
+          .filter(Objects::nonNull)
+          .map(String::trim)
+          .filter(x -> !x.isBlank())
+          .map(String::toUpperCase)
+          .collect(Collectors.toSet());
+
+      Set<String> f = fiats.listActiveSet().stream()
+          .filter(Objects::nonNull)
+          .map(String::trim)
+          .filter(x -> !x.isBlank())
+          .map(String::toUpperCase)
+          .collect(Collectors.toSet());
+
+      if (!s.isEmpty()) cachedSymbols = s;
+      if (!f.isEmpty()) cachedFiats = f;
+
+      cachedAtMs = now;
+    }
+  }
+
+  public List<String> allowedSymbols() {
+    refreshIfNeeded();
+    return cachedSymbols.stream().sorted().toList();
+  }
+
+  public List<String> allowedFiats() {
+    refreshIfNeeded();
+    return cachedFiats.stream().sorted().toList();
+  }
+
+  /** Para endpoints tipo stream: "BTC,ETH,SOL" -> List<String> validada */
+  public List<String> normalizeSymbolsCsv(String csv) {
+    if (csv == null || csv.isBlank()) return List.of("BTC", "ETH");
+
+    List<String> input = Arrays.stream(csv.split(","))
+        .map(String::trim)
+        .filter(s -> !s.isBlank())
+        .toList();
+
+    return normalizeSymbols(input);
+  }
+
+  /** Para endpoint /v1/prices: "BTC" -> "BTC" */
+  public String normalizeSymbol(String symbol) {
+    List<String> out = normalizeSymbols(List.of(symbol));
+    return out.get(0);
+  }
+
+  /** Valida lista de símbolos contra lo que hay en DB/cache */
+  public List<String> normalizeSymbols(List<String> input) {
+    refreshIfNeeded();
+
+    if (input == null || input.isEmpty()) return List.of("BTC", "ETH");
+
+    // normaliza + quita duplicados conservando orden
+    LinkedHashSet<String> normalized = new LinkedHashSet<>();
+    for (String raw : input) {
+      if (raw == null) continue;
+      String s = raw.trim().toUpperCase();
+      if (!s.isBlank()) normalized.add(s);
     }
 
-    public List<String> normalizeSymbols(String symbolsCsv) {
-        if (symbolsCsv == null || symbolsCsv.isBlank()) {
-            throw new IllegalArgumentException("symbols is required");
-        }
+    if (normalized.isEmpty()) return List.of("BTC", "ETH");
 
-        List<String> list = Arrays.stream(symbolsCsv.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isBlank())
-                .map(String::toUpperCase)
-                .distinct()
-                .collect(Collectors.toList());
+    // valida
+    List<String> invalid = normalized.stream()
+        .filter(s -> !cachedSymbols.contains(s))
+        .toList();
 
-        List<String> invalid = list.stream()
-                .filter(s -> !ALLOWED_SYMBOLS.contains(s))
-                .toList();
-
-        if (!invalid.isEmpty()) {
-            throw new IllegalArgumentException("Unsupported symbols: " + invalid + ". Allowed: " + ALLOWED_SYMBOLS);
-        }
-
-        return list;
+    if (!invalid.isEmpty()) {
+      throw new IllegalArgumentException(
+          "Unsupported symbols: " + invalid + ". Allowed: " + allowedSymbols()
+      );
     }
 
-    public List<String> normalizeSymbols(List<String> symbols) {
-        String csv = String.join(",", symbols == null ? List.of() : symbols);
-        return normalizeSymbols(csv);
-    }
+    return new ArrayList<>(normalized);
+  }
 
-    public Set<String> allowedSymbols() {
-        return ALLOWED_SYMBOLS;
-    }
+  public String normalizeFiat(String fiat) {
+    refreshIfNeeded();
 
-    public Set<String> allowedFiats() {
-        return ALLOWED_FIAT;
+    String f = (fiat == null || fiat.isBlank()) ? "USD" : fiat.trim().toUpperCase();
+    if (!cachedFiats.contains(f)) {
+      throw new IllegalArgumentException(
+          "Unsupported fiat: " + f + ". Allowed: " + allowedFiats()
+      );
     }
-
+    return f;
+  }
 }
+

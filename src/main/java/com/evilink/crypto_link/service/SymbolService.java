@@ -1,37 +1,32 @@
 package com.evilink.crypto_link.service;
 
-import com.evilink.crypto_link.persistence.SymbolRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.*;
-import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class SymbolService {
+  private final JdbcTemplate jdbc;
 
-  private final SymbolRepository repo;
+  public SymbolService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
-  // cache simple (60s)
-  private final long ttlMs = 60_000;
-  private final AtomicReference<Cache> cache = new AtomicReference<>(new Cache(0, List.of()));
-
-  public SymbolService(SymbolRepository repo) {
-    this.repo = repo;
+  public Set<String> listActiveSet() {
+    return new HashSet<>(jdbc.queryForList(
+      "select symbol from cryptolink_symbols where active=true",
+      String.class
+    ));
   }
 
-  public List<String> listActive() {
-    long now = System.currentTimeMillis();
-    Cache c = cache.get();
-    if (now - c.tsMs < ttlMs && !c.symbols.isEmpty()) return c.symbols;
-
-    List<String> fresh = repo.listActiveSymbols();
-    cache.set(new Cache(now, fresh));
-    return fresh;
+  public Map<String, String> listActiveSymbolToCoingeckoId() {
+    List<Map<String,Object>> rows = jdbc.queryForList(
+      "select symbol, coingecko_id from cryptolink_symbols where active=true"
+    );
+    Map<String,String> out = new HashMap<>();
+    for (var r : rows) {
+      out.put(((String)r.get("symbol")).toUpperCase(), ((String)r.get("coingecko_id")));
+    }
+    return out;
   }
-
-  public Map<String, String> resolveIds(List<String> symbolsUpper) {
-    return repo.resolveIds(symbolsUpper);
-  }
-
-  private record Cache(long tsMs, List<String> symbols) {}
 }
+
