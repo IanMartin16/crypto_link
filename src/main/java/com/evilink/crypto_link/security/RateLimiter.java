@@ -1,33 +1,50 @@
 package com.evilink.crypto_link.security;
 
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.LongAdder;
 
 @Component
 public class RateLimiter {
 
-    private static class Window {
-        long minute; // epochMinute
-        int count;
-    }
+  private static class Bucket {
+    final long window;     // epochMinute
+    final LongAdder count = new LongAdder();
+    Bucket(long window) { this.window = window; }
+  }
 
-    private final Map<String, Window> windows = new ConcurrentHashMap<>();
+  public record Decision(boolean allowed, int used, int limit, long resetEpochSec) {
+    public int remaining() { return Math.max(0, limit - used); }
+  }
 
-    public boolean allow(String apiKey, int limitPerMinute) {
-        long nowMinute = Instant.now().getEpochSecond() / 60;
+  private final ConcurrentHashMap<String, Bucket> buckets = new ConcurrentHashMap<>();
 
-        Window w = windows.computeIfAbsent(apiKey, k -> new Window());
+  public Decision check(String apiKey, int limitPerMinute) {
+    long nowSec = System.currentTimeMillis() / 1000;
+    long epochMinute = nowSec / 60;
+    long reset = (epochMinute + 1) * 60; // siguiente minuto
 
-        synchronized (w) {
-            if (w.minute != nowMinute) {
-                w.minute = nowMinute;
-                w.count = 0;
-            }
-            w.count++;
-            return w.count <= limitPerMinute;
-        }
-    }
+    String key = apiKey + ":" + epochMinute;
+    Bucket b = buckets.computeIfAbsent(key, k -> new Bucket(epochMinute));
+
+    b.count.increment();
+    int used = (int) b.count.sum();
+
+    boolean allowed = used <= limitPerMinute;
+    return new Decision(allowed, used, limitPerMinute, reset);
+  }
+
+  @Scheduled(fixedRateString = "${cryptolink.ratelimit.cleanup-ms:60000}")
+  public void cleanup() {
+    long epochMinute = (System.currentTimeMillis() / 1000) / 60;
+    long keepFrom = epochMinute - 3;
+    buckets.keySet().removeIf(k -> {
+      int idx = k.lastIndexOf(':');
+      if (idx < 0) return true;
+      long w = Long.parseLong(k.substring(idx + 1));
+      return w < keepFrom;
+    });
+  }
 }

@@ -17,6 +17,7 @@ public class FiatsController {
 
   @GetMapping("/v1/fiats")
   public Map<String, Object> list() {
-    return Map.of("ok", true, "fiats", fiats.listActiveSet());
+    var list = fiats.listActiveSet().stream().sorted().toList();
+    return Map.of("ok", true, "fiats", list);
   }
 }

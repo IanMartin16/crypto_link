@@ -21,9 +21,27 @@ public class CoinGeckoPriceProvider {
   public Map<String, BigDecimal> getPrices(List<String> symbols, String fiat) {
 
     Map<String,String> symToId = symbolService.listActiveSymbolToCoingeckoId();
+    String vs = fiat.toLowerCase();
 
-    String vs = fiat.toLowerCase(); // eur/usd/mxn
-    List<String> norm = symbols.stream().map(s -> s.trim().toUpperCase()).filter(s -> !s.isBlank()).distinct().toList();
+    List<String> norm = symbols.stream()
+      .filter(Objects::nonNull)
+      .map(s -> s.trim().toUpperCase())
+      .filter(s -> !s.isBlank())
+      .distinct()
+      .toList();
+
+    // Detecta símbolos sin mapping
+    List<String> missing = norm.stream()
+      .filter(sym -> {
+        String id = symToId.get(sym);
+        return (id == null || id.isBlank());
+      })
+      .toList();
+
+    // Si quieres que NO truene, comenta este throw y solo deja log
+    if (!missing.isEmpty()) {
+      throw new IllegalArgumentException("Missing coingecko_id for: " + missing);
+    }
 
     // ids para coingecko
     String ids = norm.stream()
@@ -44,18 +62,29 @@ public class CoinGeckoPriceProvider {
       .retrieve()
       .body(Map.class);
 
-    Map<String, BigDecimal> out = new HashMap<>();
-    if (resp == null) return out;
+    if (resp == null) return Map.of();
 
+    // reverse map: id -> symbol
+    Map<String,String> idToSym = new HashMap<>();
     for (String sym : norm) {
       String id = symToId.get(sym);
-      if (id == null) continue;
+      if (id != null) idToSym.put(id, sym);
+    }
 
-      Object rowObj = resp.get(id);
+    Map<String, BigDecimal> out = new LinkedHashMap<>();
+
+    for (var entry : resp.entrySet()) {
+      String id = entry.getKey();
+      Object rowObj = entry.getValue();
       if (!(rowObj instanceof Map<?,?> row)) continue;
 
       Object priceObj = row.get(vs);
-      if (priceObj instanceof Number n) out.put(sym, BigDecimal.valueOf(n.doubleValue()));
+      if (!(priceObj instanceof Number n)) continue;
+
+      String sym = idToSym.get(id);
+      if (sym != null) {
+        out.put(sym, BigDecimal.valueOf(n.doubleValue()));
+      }
     }
 
     return out;

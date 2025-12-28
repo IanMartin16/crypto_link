@@ -10,15 +10,17 @@ import java.util.Optional;
 public class ApiKeyStore {
 
   public enum Plan {
-     FREE(60, 1),
-     BUSINESS(600, 5);
+     FREE(60, 1, 2),
+     BUSINESS(600, 5, 20);
 
      public final int requestsPerMinute;
      public final int sseConnections;
+     public final int maxSymbols;
 
-     Plan(int rpm, int sseConn) {
+     Plan(int rpm, int sseConn, int symbols) {
         this.requestsPerMinute = rpm;
         this.sseConnections = sseConn;
+        this.maxSymbols = symbols;
         }
    }
 

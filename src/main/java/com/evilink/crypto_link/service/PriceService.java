@@ -32,6 +32,7 @@ public class PriceService {
                 .map(s -> s.trim().toUpperCase())
                 .filter(s -> !s.isBlank())
                 .distinct()
+                .sorted()
                 .collect(Collectors.joining(","));
 
         String key = PriceCache.key(fiat, symbolsCsv);

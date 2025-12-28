@@ -4,8 +4,11 @@ import com.evilink.crypto_link.security.ApiKeyFilter;
 import com.evilink.crypto_link.sse.PriceBroadcaster;
 import com.evilink.crypto_link.validation.MarketValidator;
 import jakarta.servlet.http.HttpServletRequest;
+
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
@@ -33,6 +36,7 @@ public class StreamController {
 
         var list = validator.normalizeSymbolsCsv(symbols);
         var f = validator.normalizeFiat(fiat);
+
 
         return broadcaster.subscribe(apiKey, list, f);
     }
