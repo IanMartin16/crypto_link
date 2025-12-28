@@ -26,6 +26,7 @@ public class ApiExceptionHandler {
 
   @ExceptionHandler(ResponseStatusException.class)
   public ResponseEntity<Map<String, Object>> status(ResponseStatusException e, HttpServletRequest req) {
+    String requestId = (String) req.getAttribute("Cryptolink.requestId");
     return ResponseEntity.status(e.getStatusCode()).body(Map.of(
       "ok", false,
       "error", e.getReason() == null ? "Error" : e.getReason(),

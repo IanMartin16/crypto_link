@@ -1,6 +1,7 @@
 package com.evilink.crypto_link.controller;
 
 import com.evilink.crypto_link.security.ApiKeyFilter;
+import com.evilink.crypto_link.security.ApiKeyStore;
 import com.evilink.crypto_link.sse.PriceBroadcaster;
 import com.evilink.crypto_link.validation.MarketValidator;
 import jakarta.servlet.http.HttpServletRequest;
@@ -30,14 +31,15 @@ public class StreamController {
     ) throws Exception {
 
         String apiKey = (String) req.getAttribute(ApiKeyFilter.REQ_ATTR_API_KEY);
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalArgumentException("Missing apiKey in request context");
-        }
+        ApiKeyStore.Plan plan = (ApiKeyStore.Plan) req.getAttribute(ApiKeyFilter.REQ_ATTR_PLAN);
 
         var list = validator.normalizeSymbolsCsv(symbols);
+        if (plan != null && list.size() > plan.maxSymbols) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Too many symbols. Max " + plan.maxSymbols + " for plan " + plan.name()
+            );
+        }
         var f = validator.normalizeFiat(fiat);
-
-
         return broadcaster.subscribe(apiKey, list, f);
     }
 }
