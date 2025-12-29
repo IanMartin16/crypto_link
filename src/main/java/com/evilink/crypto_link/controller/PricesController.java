@@ -7,9 +7,31 @@ import com.evilink.crypto_link.validation.MarketValidator;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.headers.Header;
+import io.swagger.v3.oas.annotations.media.Content;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.*;
+
+@ApiResponses({
+  @ApiResponse(responseCode="200", description="OK",
+    headers = {
+      @Header(name="X-Plan"),
+      @Header(name="X-RateLimit-Limit"),
+      @Header(name="X-RateLimit-Remaining"),
+      @Header(name="X-RateLimit-Reset"),
+      @Header(name="X-RateLimit-Used")
+    }
+  ),
+  @ApiResponse(responseCode="401", description="Invalid or missing x-api-key", content=@Content),
+  @ApiResponse(responseCode="429", description="Rate limit exceeded",
+    headers = { @Header(name="Retry-After") },
+    content=@Content
+  )
+})
 
 @RestController
 public class PricesController {
@@ -22,6 +44,7 @@ public class PricesController {
     this.validator = validator;
   }
 
+  @SecurityRequirement(name = "apiKeyAuth")
   @GetMapping("/v1/prices")
   public Map<String, Object> prices(
       HttpServletRequest req,

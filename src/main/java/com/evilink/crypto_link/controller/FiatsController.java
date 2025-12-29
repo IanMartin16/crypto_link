@@ -1,6 +1,9 @@
 package com.evilink.crypto_link.controller;
 
 import com.evilink.crypto_link.service.FiatService;
+
+import io.swagger.v3.oas.annotations.Operation;
+
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -15,6 +18,7 @@ public class FiatsController {
     this.fiats = fiats;
   }
 
+  @Operation(security = {})
   @GetMapping("/v1/fiats")
   public Map<String, Object> list() {
     var list = fiats.listActiveSet().stream().sorted().toList();

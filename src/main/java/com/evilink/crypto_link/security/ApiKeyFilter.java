@@ -91,7 +91,7 @@ public class ApiKeyFilter extends OncePerRequestFilter {
       var planOpt = store.resolvePlan(apiKey);
       if (planOpt.isEmpty()) {
         metrics.incDenied("invalid_or_missing_key");
-        writeJson(response, 401, "{\"ok\":false,\"error\":\"Invalid or missing x-api-key\"}");
+        writeJson(request, response, 401, "{\"ok\":false,\"error\":\"Invalid or missing x-api-key\"}");
         log.warn("Denied request: missing/invalid credentials path={}", request.getRequestURI());
         return;
       }
@@ -114,7 +114,7 @@ public class ApiKeyFilter extends OncePerRequestFilter {
       response.setHeader("Retry-After", String.valueOf(retryAfter));
 
       metrics.incDenied("rate_limit");
-      writeJson(response, 429, "{\"ok\":false,\"error\":\"Rate limit exceeded\"}");
+      writeJson(request,response, 429, "{\"ok\":false,\"error\":\"Rate limit exceeded\"}");
       log.warn("Rate limit exceeded path={} plan={} apiKey={}", request.getRequestURI(), plan.name(), safeKey(apiKey));
       return;
     }
@@ -127,11 +127,28 @@ public class ApiKeyFilter extends OncePerRequestFilter {
     filterChain.doFilter(request, response);
   }
 
-  private void writeJson(HttpServletResponse res, int status, String body) throws IOException {
-    res.setStatus(status);
-    res.setContentType(MediaType.APPLICATION_JSON_VALUE);
-    res.getWriter().write(body);
+  private void writeJson(HttpServletRequest req, HttpServletResponse res, int status, String error) throws IOException {
+  String rid = (String) req.getAttribute("requestId"); // lo setea RequestIdFilter
+
+  // ultra defensivo
+  if (rid == null || rid.isBlank()) {
+    rid = java.util.UUID.randomUUID().toString();
+    req.setAttribute("requestId", rid);
   }
+
+  // siempre reflejarlo en response
+   if (res.getHeader("X-Request-Id") == null) {
+    res.setHeader("X-Request-Id", rid);
+   }
+
+   res.setStatus(status);
+   res.setContentType(MediaType.APPLICATION_JSON_VALUE);
+
+   String safeMsg = (error == null) ? "Error" : error.replace("\"", "\\\"");
+   res.getWriter().write(("""
+     {"ok":false,"error":"%s","requestId":"%s"}
+    """).formatted(safeMsg, rid));
+}
 
   // Para no loggear completa la apiKey
   private String safeKey(String apiKey) {
