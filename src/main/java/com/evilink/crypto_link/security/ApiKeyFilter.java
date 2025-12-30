@@ -57,7 +57,9 @@ public class ApiKeyFilter extends OncePerRequestFilter {
       || p.startsWith("/swagger-ui")
       || p.equals("/api-docs")
       || p.startsWith("/api-docs/")
-      || p.startsWith("/v3/api-docs");
+      || p.startsWith("/v3/api-docs")
+      || p.startsWith("/v1/billing/links")
+      || p.startsWith("/stripe/webhook");
   }
 
   @Override
