@@ -119,3 +119,30 @@ curl -s -X POST "https://cryptolink-production.up.railway.app/v1/billing/checkou
   -H "Content-Type: application/json" \
   -d '{"email":"tu_correo@dominio.com"}'
 
+# CryptoLink (by evi_link.dev)
+
+CryptoLink is a simple, production-ready crypto pricing API powered by CoinGecko.
+It supports **multiple symbols**, **multiple fiats (USD/MXN/EUR)**, **SSE streaming**, **rate limits**, and **plans** (BUSINESS / PRO).
+
+**Base URL (PROD):**  
+https://cryptolink-production.up.railway.app
+
+---
+
+## Features
+
+- ✅ `/v1/prices` multi-quote endpoint
+- ✅ `/v1/stream/prices` real-time streaming via **SSE**
+- ✅ API keys + plans (FREE / BUSINESS / PRO)
+- ✅ Rate limit headers (`X-RateLimit-*`)
+- ✅ Max symbols per plan (enforced)
+- ✅ Supported symbols/fiats from DB catalog
+- ✅ Health endpoints via actuator
+
+---
+
+## Quick Start
+
+### 1) Ping
+```bash
+curl -i https://cryptolink-production.up.railway.app/v1/ping
