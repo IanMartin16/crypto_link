@@ -1,5 +1,10 @@
 package com.evilink.crypto_link.billing;
 
+import com.stripe.Stripe;
+import com.stripe.model.checkout.Session;
+import com.stripe.param.checkout.SessionCreateParams;
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -12,53 +17,60 @@ import java.util.Map;
 @RequestMapping("/v1/billing")
 public class BillingController {
 
-  private final StripeFulfillmentService fulfillment;
+  @Value("${stripe.secret-key}")
+  private String stripeSecret;
 
-  private final String linkPro;
-  private final String linkBusiness;
+  @Value("${stripe.price.business}")
+  private String priceBusiness;
 
-  public BillingController(
-      StripeFulfillmentService fulfillment,
-      @Value("${cryptolink.stripe.link.pro:}") String linkPro,
-      @Value("${cryptolink.stripe.link.business:}") String linkBusiness
-  ) {
-    this.fulfillment = fulfillment;
-    this.linkPro = linkPro;
-    this.linkBusiness = linkBusiness;
-  }
+  @Value("${stripe.price.pro}")
+  private String pricePro;
 
-  // Público: lo puedes linkear desde README / evi_link.dev
-  @GetMapping("/links")
-  public Map<String, Object> links() {
-    return Map.of(
-      "ok", true,
-      "plans", Map.of(
-        "PRO", linkPro,
-        "BUSINESS", linkBusiness
-      ),
-      "ts", OffsetDateTime.now().toString()
-    );
-  }
+  @Value("${app.landing-url}")
+  private String landingUrl;
 
-  // Público: success redirect de Stripe
-  @GetMapping("/claim")
-  public Map<String, Object> claim(@RequestParam("session_id") String sessionId) {
-    if (sessionId == null || sessionId.isBlank()) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Missing session_id");
+  @PostMapping("/checkout")
+  public Map<String,Object> checkout(
+      @RequestParam String plan,
+      @RequestBody CheckoutReq body
+  ) throws Exception {
+
+    String email = body.email == null ? "" : body.email.trim().toLowerCase();
+    if (email.isBlank() || !email.contains("@")) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid email");
     }
 
-    try {
-      var r = fulfillment.fulfillFromCheckoutSessionId(sessionId);
+    String p = plan == null ? "" : plan.trim().toUpperCase();
+    String priceId = switch (p) {
+      case "BUSINESS" -> priceBusiness;
+      case "PRO" -> pricePro;
+      default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unknown plan");
+    };
 
-      return Map.of(
-        "ok", true,
-        "plan", r.plan(),
-        "apiKey", r.apiKey(),
-        "email", r.email(),
-        "ts", OffsetDateTime.now().toString()
-      );
-    } catch (Exception e) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot claim: " + e.getMessage());
-    }
+    Stripe.apiKey = stripeSecret;
+
+    SessionCreateParams params =
+        SessionCreateParams.builder()
+            .setMode(SessionCreateParams.Mode.SUBSCRIPTION)
+            .setCustomerEmail(email)
+            .setSuccessUrl(landingUrl + "/success?session_id={CHECKOUT_SESSION_ID}")
+            .setCancelUrl(landingUrl + "?canceled=1")
+            .putMetadata("plan", p)
+            .putMetadata("email", email)
+            .addLineItem(
+                SessionCreateParams.LineItem.builder()
+                    .setQuantity(1L)
+                    .setPrice(priceId)
+                    .build()
+            )
+            .build();
+
+    Session session = Session.create(params);
+
+    return Map.of("ok", true, "url", session.getUrl());
+  }
+
+  public static class CheckoutReq {
+    public String email;
   }
 }
