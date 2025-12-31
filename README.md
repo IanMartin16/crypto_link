@@ -101,8 +101,8 @@ CryptoLink usa **Stripe** para suscripciones mensuales y emite/actualiza el **AP
 
 ## Opción A: Comprar con Stripe Payment Links (rápido)
 
-- BUSINESS: <PEGA_AQUI_TU_PAYMENT_LINK_BUSINESS>
-- PRO: <PEGA_AQUI_TU_PAYMENT_LINK_PRO>
+- BUSINESS: <https://buy.stripe.com/test_aFabJ1cd251ofD87AR3F601>
+- PRO: <https://buy.stripe.com/test_3cI7sLcd2ctQ0Ie5sJ3F600>
 
 Después del pago, recibirás tu **API Key** por correo (y también podrás verla con `/v1/me` si ya la tienes).
 
@@ -118,3 +118,4 @@ Después del pago, recibirás tu **API Key** por correo (y también podrás verl
 curl -s -X POST "https://cryptolink-production.up.railway.app/v1/billing/checkout?plan=BUSINESS" \
   -H "Content-Type: application/json" \
   -d '{"email":"tu_correo@dominio.com"}'
+
