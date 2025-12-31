@@ -26,7 +26,7 @@ public class StripeWebhookController {
     this.fulfillment = fulfillment;
   }
 
-  @PostMapping(value = "/webhook", consumes = MediaType.APPLICATION_JSON_VALUE)
+  @PostMapping(value = "/stripe/webhook", consumes = MediaType.APPLICATION_JSON_VALUE)
   public Map<String, Object> handle(
       @RequestBody String payload,
       @RequestHeader(name = "Stripe-Signature", required = false) String sigHeader,

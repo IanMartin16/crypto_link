@@ -84,3 +84,37 @@ cryptolink.coingecko.timeout-ms=5000
 
 # SSE
 cryptolink.sse.keepalive-ms=25000
+
+## Billing (Stripe)
+
+CryptoLink usa **Stripe** para suscripciones mensuales y emite/actualiza el **API Key** automáticamente al confirmar el pago.
+
+### Planes
+- **FREE**: 60 req/min, 1 SSE connection, maxSymbols=3
+- **BUSINESS**: 600 req/min, 5 SSE connections, maxSymbols=20
+- **PRO**: 1200 req/min, 10 SSE connections, maxSymbols=25
+
+> Puedes ver tu plan y límites actuales en:
+`GET /v1/me` (requiere `x-api-key`)
+
+---
+
+## Opción A: Comprar con Stripe Payment Links (rápido)
+
+- BUSINESS: <PEGA_AQUI_TU_PAYMENT_LINK_BUSINESS>
+- PRO: <PEGA_AQUI_TU_PAYMENT_LINK_PRO>
+
+Después del pago, recibirás tu **API Key** por correo (y también podrás verla con `/v1/me` si ya la tienes).
+
+---
+
+## Opción B: Checkout desde la API (recomendado para integración)
+
+### 1) Crear sesión de Checkout
+(El backend crea la sesión y te regresa un `url` de Stripe Checkout)
+
+**Ejemplo: BUSINESS**
+```bash
+curl -s -X POST "https://cryptolink-production.up.railway.app/v1/billing/checkout?plan=BUSINESS" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"tu_correo@dominio.com"}'
