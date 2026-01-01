@@ -59,8 +59,9 @@ public class ApiKeyFilter extends OncePerRequestFilter {
       || p.startsWith("/api-docs/")
       || p.startsWith("/v3/api-docs")
       || p.startsWith("/v1/billing")
+      || p.startsWith("/v1/billing/checkout")
       || p.startsWith("/stripe")
-      || p.startsWith("/v1/stripe");
+      || p.startsWith("/stripe/webhook");
   }
 
   @Override
