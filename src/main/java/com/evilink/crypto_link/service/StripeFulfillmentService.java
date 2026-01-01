@@ -3,6 +3,7 @@ package com.evilink.crypto_link.service;
 import com.evilink.crypto_link.persistence.ApiKeyRepository;
 import com.stripe.Stripe;
 import com.stripe.model.Event;
+import com.stripe.model.Subscription;
 import com.stripe.model.checkout.Session;
 import com.stripe.net.ApiResource;
 import org.slf4j.Logger;
@@ -12,23 +13,25 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.security.SecureRandom;
 import java.time.OffsetDateTime;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 @Service
 public class StripeFulfillmentService {
 
   private static final Logger log = LoggerFactory.getLogger(StripeFulfillmentService.class);
 
-  @Value("${cryptolink.stripe.secret-key:}")
-  private String stripeSecretKey;
-
   private final JdbcTemplate jdbc;
   private final ApiKeyRepository apiKeys;
   private final SmtpEmailService email;
-  private final SecureRandom rnd = new SecureRandom();
+
+  private final Random rnd = new Random();
+
+  @Value("${cryptolink.stripe.secret-key:}")
+  private String stripeSecretKey;
 
   public StripeFulfillmentService(JdbcTemplate jdbc, ApiKeyRepository apiKeys, SmtpEmailService email) {
     this.jdbc = jdbc;
@@ -36,17 +39,12 @@ public class StripeFulfillmentService {
     this.email = email;
   }
 
-  /**
-   * Procesa checkout.session.completed.
-   * Importante: si algo de DB falla, debe lanzar excepción para que el controller responda 500
-   * y Stripe reintente.
-   */
   @Transactional
   public boolean process(Event event) throws Exception {
 
-    // 0) Solo procesamos este tipo (el controller normalmente ya filtra)
+    // ✅ Ignora todo lo que no sea checkout.session.completed
     if (!"checkout.session.completed".equals(event.getType())) {
-      return false;
+      return true;
     }
 
     // 1) Obtener Session (deserializada o fallback)
@@ -56,31 +54,57 @@ public class StripeFulfillmentService {
       return false;
     }
 
-    // 2) plan + email
-    String plan = (s.getMetadata() != null) ? s.getMetadata().get("plan") : null;
+    // 2) plan + email (primero del objeto recibido)
+    String plan = meta(s, "plan");
 
     String emailTo = null;
     if (s.getCustomerDetails() != null && s.getCustomerDetails().getEmail() != null) {
       emailTo = s.getCustomerDetails().getEmail();
     } else if (s.getCustomerEmail() != null) {
       emailTo = s.getCustomerEmail();
-    } else if (s.getMetadata() != null) {
-      emailTo = s.getMetadata().get("email");
+    } else {
+      emailTo = meta(s, "email");
     }
 
-    if (plan == null || plan.isBlank() || emailTo == null || emailTo.isBlank()) {
-      // NO reservamos el evento si faltan datos, para permitir retry futuro
-      log.warn("Stripe fulfillment: missing plan/email eventId={} sessionId={}", event.getId(), s.getId());
+    // 2b) Fallback fuerte: retrieve + expand customer/subscription
+    if (isBlank(plan) || isBlank(emailTo)) {
+      Session full = retrieveSessionExpanded(s.getId());
+
+      if (isBlank(plan)) plan = meta(full, "plan");
+
+      if (isBlank(emailTo)) {
+        if (full.getCustomerDetails() != null && full.getCustomerDetails().getEmail() != null) {
+          emailTo = full.getCustomerDetails().getEmail();
+        } else if (full.getCustomerEmail() != null) {
+          emailTo = full.getCustomerEmail();
+        } else {
+          emailTo = meta(full, "email");
+        }
+      }
+
+      // Si el plan estaba en Subscription.metadata
+      if (isBlank(plan) && full.getSubscription() != null) {
+        Subscription sub = Subscription.retrieve(full.getSubscription());
+        if (sub.getMetadata() != null) {
+          plan = sub.getMetadata().get("plan");
+        }
+      }
+    }
+
+    if (isBlank(plan) || isBlank(emailTo)) {
+      // OJO: no reservamos eventId si faltan datos -> permite retry
+      log.warn("Stripe fulfillment: missing plan/email eventId={} sessionId={} plan={} email={}",
+          event.getId(), s.getId(), plan, emailTo);
       return false;
     }
 
     plan = plan.trim().toUpperCase();
     emailTo = emailTo.trim().toLowerCase();
 
-    // 3) Idempotencia (si ya se procesó este eventId, no repetir)
+    // 3) Idempotencia por eventId
     if (!reserveEvent(event.getId())) {
       log.info("Stripe fulfillment: duplicate event ignored eventId={}", event.getId());
-      return false;
+      return true;
     }
 
     // 4) Genera apiKey + inserta
@@ -102,7 +126,6 @@ public class StripeFulfillmentService {
   }
 
   private Session extractSession(Event event) throws Exception {
-    // ✅ Forma nueva (sin deprecated)
     var deser = event.getDataObjectDeserializer();
     var opt = deser.getObject();
 
@@ -110,28 +133,35 @@ public class StripeFulfillmentService {
       return s;
     }
 
-    // ✅ Fallback: usar rawJson para obtener id y hacer retrieve
+    // Fallback: usar rawJson para obtener id y hacer retrieve
     String rawJson = deser.getRawJson();
     if (rawJson == null || rawJson.isBlank()) return null;
 
     @SuppressWarnings("unchecked")
     Map<String, Object> raw = ApiResource.GSON.fromJson(rawJson, Map.class);
     String sessionId = raw == null ? null : (String) raw.get("id");
-    if (sessionId == null || sessionId.isBlank()) return null;
+    if (isBlank(sessionId)) return null;
 
-    // Necesita secret key real
+    return retrieveSessionExpanded(sessionId);
+  }
+
+  private Session retrieveSessionExpanded(String sessionId) throws Exception {
+    ensureStripeKey();
+    Stripe.apiKey = stripeSecretKey;
+
+    Map<String, Object> params = new java.util.HashMap<>();
+    params.put("expand", List.of("customer", "subscription"));
+
+    return Session.retrieve(sessionId, params, null);
+  }
+
+  private void ensureStripeKey() {
     if (stripeSecretKey == null || stripeSecretKey.isBlank()) {
-      log.warn("Stripe fulfillment: missing cryptolink.stripe.secret-key (sk_...)");
-      return null;
+      throw new IllegalStateException("Stripe fulfillment: missing cryptolink.stripe.secret-key (sk_...)");
     }
     if (!stripeSecretKey.startsWith("sk_")) {
-      log.warn("Stripe fulfillment: secret-key does not look like sk_... (current startsWith={})",
-          stripeSecretKey.length() >= 3 ? stripeSecretKey.substring(0, 3) : "???");
-      return null;
+      throw new IllegalStateException("Stripe fulfillment: secret-key must start with sk_...");
     }
-
-    Stripe.apiKey = stripeSecretKey;
-    return Session.retrieve(sessionId);
   }
 
   private boolean reserveEvent(String eventId) {
@@ -152,5 +182,14 @@ public class StripeFulfillmentService {
     if (k == null) return "";
     if (k.length() <= 10) return "***";
     return k.substring(0, 4) + "..." + k.substring(k.length() - 4);
+  }
+
+  private static boolean isBlank(String s) {
+    return s == null || s.isBlank();
+  }
+
+  private static String meta(Session s, String key) {
+    if (s == null || s.getMetadata() == null) return null;
+    return s.getMetadata().get(key);
   }
 }

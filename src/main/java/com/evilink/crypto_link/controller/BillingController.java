@@ -3,20 +3,20 @@ package com.evilink.crypto_link.controller;
 import com.stripe.Stripe;
 import com.stripe.model.checkout.Session;
 import com.stripe.param.checkout.SessionCreateParams;
-import jakarta.validation.constraints.Email;
-import jakarta.validation.constraints.NotBlank;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/v1/billing")
 public class BillingController {
 
-  // ✅ usa tus nombres reales
   @Value("${cryptolink.stripe.secret-key:}")
   private String stripeSecret;
 
@@ -26,10 +26,10 @@ public class BillingController {
   @Value("${cryptolink.stripe.price.pro:}")
   private String pricePro;
 
-  @Value("${app.landing-url:https://evi_link.dev/cryptolink}")
+  @Value("${app.landing-url:}")
   private String landingUrl;
 
-  public record CheckoutReq(@Email @NotBlank String email) {}
+  public record CheckoutReq(String email) {}
 
   @PostMapping("/checkout")
   public Map<String, Object> checkout(
@@ -41,11 +41,19 @@ public class BillingController {
     if (stripeSecret == null || stripeSecret.isBlank()) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Stripe not configured");
     }
+    if (!stripeSecret.startsWith("sk_")) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Stripe secret-key must be sk_...");
+    }
+    if (landingUrl == null || landingUrl.isBlank()) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Missing app.landing-url");
+    }
     if (body == null || body.email() == null || body.email().isBlank()) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Missing email");
     }
 
-    String p = plan == null ? "" : plan.trim().toUpperCase();
+    String p = (plan == null) ? "" : plan.trim().toUpperCase();
+    String email = body.email().trim().toLowerCase();
+
     String priceId = switch (p) {
       case "BUSINESS" -> priceBusiness;
       case "PRO" -> pricePro;
@@ -59,41 +67,47 @@ public class BillingController {
     // Stripe key
     Stripe.apiKey = stripeSecret;
 
-    // Idempotencia: si no mandan header, generamos uno determinista por email+plan
+    // ✅ Idempotencia:
+    // Si cliente manda Idempotency-Key, úsalo. Si no, generamos uno por request para no amarrarte en pruebas.
     String idempotencyKey = (idemKey == null || idemKey.isBlank())
-        ? ("cryptolink_" + p + "_" + body.email().trim().toLowerCase())
+        ? ("cryptolink_" + UUID.randomUUID())
         : idemKey.trim();
 
-    // Success/Cancel URLs (landing)
-    String successUrl = landingUrl + "?status=success&plan=" + p;
-    String cancelUrl  = landingUrl + "?status=cancel&plan=" + p;
+    // URLs
+    String successUrl = landingUrl + "?status=success&plan=" + url(p);
+    String cancelUrl  = landingUrl + "?status=cancel&plan=" + url(p);
 
     SessionCreateParams params = SessionCreateParams.builder()
         .setMode(SessionCreateParams.Mode.SUBSCRIPTION)
-        .setCustomerEmail(body.email().trim())
+        .setCustomerEmail(email)
         .setSuccessUrl(successUrl)
         .setCancelUrl(cancelUrl)
+
+        // ✅ metadata EN LA SESIÓN (esto arregla "missing plan/email" en webhook)
+        .putMetadata("app", "cryptolink")
+        .putMetadata("plan", p)
+        .putMetadata("email", email)
+
+        // (opcional) tracking útil
+        .setClientReferenceId("cryptolink_" + p + "_" + email)
+
         .addLineItem(
             SessionCreateParams.LineItem.builder()
                 .setPrice(priceId)
                 .setQuantity(1L)
                 .build()
         )
-        // Metadatos útiles para fulfillment (webhook)
-        .putMetadata("app", "cryptolink")
-        .putMetadata("plan", p)
-        .putMetadata("email", body.email().trim().toLowerCase())
 
-        .setSubscriptionData (
+        // ✅ metadata también en la suscripción (fallback)
+        .setSubscriptionData(
             SessionCreateParams.SubscriptionData.builder()
                 .putMetadata("app", "cryptolink")
                 .putMetadata("plan", p)
-                .putMetadata("email", body.email().trim().toLowerCase())
+                .putMetadata("email", email)
                 .build()
         )
         .build();
 
-    // Idempotency (Stripe)
     com.stripe.net.RequestOptions opts = com.stripe.net.RequestOptions.builder()
         .setIdempotencyKey(idempotencyKey)
         .build();
@@ -103,9 +117,13 @@ public class BillingController {
     return Map.of(
         "ok", true,
         "plan", p,
-        "email", body.email().trim().toLowerCase(),
+        "email", email,
         "url", session.getUrl(),
         "sessionId", session.getId()
     );
+  }
+
+  private static String url(String s) {
+    return URLEncoder.encode(s, StandardCharsets.UTF_8);
   }
 }
