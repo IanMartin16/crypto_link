@@ -69,6 +69,12 @@ public class StripeFulfillmentService {
     // 2b) Fallback fuerte: retrieve + expand customer/subscription
     if (isBlank(plan) || isBlank(emailTo)) {
       Session full = retrieveSessionExpanded(s.getId());
+      log.warn("Stripe fulfillment debug sessionId={} sessionMeta={} subId={}",
+          full.getId(),
+          full.getMetadata(),
+          full.getSubscription()
+        );
+
 
       if (isBlank(plan)) plan = meta(full, "plan");
 
