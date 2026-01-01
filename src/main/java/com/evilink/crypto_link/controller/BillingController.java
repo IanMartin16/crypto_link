@@ -83,6 +83,14 @@ public class BillingController {
         .putMetadata("app", "cryptolink")
         .putMetadata("plan", p)
         .putMetadata("email", body.email().trim().toLowerCase())
+
+        .setSubscriptionData (
+            SessionCreateParams.SubscriptionData.builder()
+                .putMetadata("app", "cryptolink")
+                .putMetadata("plan", p)
+                .putMetadata("email", body.email().trim().toLowerCase())
+                .build()
+        )
         .build();
 
     // Idempotency (Stripe)
