@@ -2,6 +2,7 @@ package com.evilink.crypto_link.controller;
 
 import com.evilink.crypto_link.service.StripeFulfillmentService;
 import com.stripe.exception.SignatureVerificationException;
+import jakarta.servlet.http.HttpServletRequest;
 import com.stripe.model.Event;
 import com.stripe.net.Webhook;
 import org.slf4j.Logger;
@@ -37,13 +38,20 @@ public class StripeWebhookController {
     if (sigHeader == null || sigHeader.isBlank()) {
       return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "Missing Stripe-Signature"));
     }
+    log.warn("🔥 STRIPE WEBHOOK HIT uri={} len={} sigPresent={}",
+        req.getRequestURI(),
+        payload != null ? payload.length() : -1,
+        req.getHeader("Stripe-Signature") != null
+      );
 
     final Event event;
     try {
       event = Webhook.constructEvent(payload, sigHeader, webhookSecret);
     } catch (SignatureVerificationException e) {
+        log.warn("❌ STRIPE SIGNATURE INVALID: {}", e.getMessage());
       return ResponseEntity.status(400).body(Map.of("ok", false, "error", "Invalid signature"));
     } catch (Exception e) {
+        log.error("💥 STRIPE WEBHOOK ERROR", e);log.error("💥 STRIPE WEBHOOK ERROR", e);
       return ResponseEntity.status(400).body(Map.of("ok", false, "error", "Bad payload"));
     }
 
