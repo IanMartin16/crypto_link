@@ -33,6 +33,12 @@ public class StripeFulfillmentService {
   @Value("${cryptolink.stripe.secret-key:}")
   private String stripeSecretKey;
 
+  @Value("${cryptolink.stripe.price.business:}")
+  private String priceBusiness;
+
+  @Value("${cryptolink.stripe.price.pro:}")
+  private String pricePro;
+
   public StripeFulfillmentService(JdbcTemplate jdbc, ApiKeyRepository apiKeys, SmtpEmailService email) {
     this.jdbc = jdbc;
     this.apiKeys = apiKeys;
@@ -42,7 +48,7 @@ public class StripeFulfillmentService {
   @Transactional
   public boolean process(Event event) throws Exception {
 
-    // ✅ Ignora todo lo que no sea checkout.session.completed
+    // ✅ Ignora eventos no soportados (webhook "OK")
     if (!"checkout.session.completed".equals(event.getType())) {
       return true;
     }
@@ -67,14 +73,13 @@ public class StripeFulfillmentService {
     }
 
     // 2b) Fallback fuerte: retrieve + expand customer/subscription
+    Session full = null;
     if (isBlank(plan) || isBlank(emailTo)) {
-      Session full = retrieveSessionExpanded(s.getId());
-      log.warn("Stripe fulfillment debug sessionId={} sessionMeta={} subId={}",
-          full.getId(),
-          full.getMetadata(),
-          full.getSubscription()
-        );
+      full = retrieveSessionExpanded(s.getId());
 
+      // DEBUG (puedes bajar a INFO cuando quede)
+      log.warn("Stripe fulfillment debug sessionId={} sessionMeta={} subId={}",
+          full.getId(), full.getMetadata(), full.getSubscription());
 
       if (isBlank(plan)) plan = meta(full, "plan");
 
@@ -87,13 +92,28 @@ public class StripeFulfillmentService {
           emailTo = meta(full, "email");
         }
       }
+    }
 
-      // Si el plan estaba en Subscription.metadata
-      if (isBlank(plan) && full.getSubscription() != null) {
-        Subscription sub = Subscription.retrieve(full.getSubscription());
-        if (sub.getMetadata() != null) {
-          plan = sub.getMetadata().get("plan");
+    // 2c) Si sigue faltando plan: inferirlo por priceId de la Subscription
+    if (isBlank(plan)) {
+      if (full == null) {
+        full = retrieveSessionExpanded(s.getId());
+      }
+      String subId = full.getSubscription();
+
+      // 1) intenta metadata de subscription
+      String planFromSubMeta = null;
+      if (!isBlank(subId)) {
+        Subscription subBasic = Subscription.retrieve(subId);
+        if (subBasic.getMetadata() != null) {
+          planFromSubMeta = subBasic.getMetadata().get("plan");
         }
+      }
+      if (!isBlank(planFromSubMeta)) {
+        plan = planFromSubMeta;
+      } else {
+        // 2) inferir por priceId (definitivo)
+        plan = inferPlanFromSubscription(subId);
       }
     }
 
@@ -159,6 +179,36 @@ public class StripeFulfillmentService {
     params.put("expand", List.of("customer", "subscription"));
 
     return Session.retrieve(sessionId, params, null);
+  }
+
+  private String inferPlanFromSubscription(String subId) throws Exception {
+    if (isBlank(subId)) return null;
+
+    ensureStripeKey();
+    Stripe.apiKey = stripeSecretKey;
+
+    // Expand para traer price en items
+    Map<String, Object> params = new java.util.HashMap<>();
+    params.put("expand", List.of("items.data.price"));
+    Subscription sub = Subscription.retrieve(subId, params, null);
+
+    String priceId = null;
+    if (sub.getItems() != null && sub.getItems().getData() != null && !sub.getItems().getData().isEmpty()) {
+      var item0 = sub.getItems().getData().get(0);
+      if (item0.getPrice() != null) priceId = item0.getPrice().getId();
+    }
+
+    if (isBlank(priceId)) {
+      log.warn("Stripe fulfillment: could not infer plan (no priceId) subId={}", subId);
+      return null;
+    }
+
+    if (!isBlank(pricePro) && pricePro.equals(priceId)) return "PRO";
+    if (!isBlank(priceBusiness) && priceBusiness.equals(priceId)) return "BUSINESS";
+
+    log.warn("Stripe fulfillment: unknown priceId={} (expected pro={} business={})",
+        priceId, pricePro, priceBusiness);
+    return null;
   }
 
   private void ensureStripeKey() {
