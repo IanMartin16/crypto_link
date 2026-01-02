@@ -10,8 +10,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.util.StreamUtils;
 import org.springframework.web.bind.annotation.*;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 @RestController
@@ -30,21 +32,23 @@ public class StripeWebhookController {
   }
 
   @PostMapping(value = "/webhook", consumes = MediaType.APPLICATION_JSON_VALUE)
-  public ResponseEntity<Map<String, Object>> handle(
-      @RequestBody String payload,
-      @RequestHeader(name = "Stripe-Signature", required = false) String sigHeader,
-      HttpServletRequest req
-  ) {
+  public ResponseEntity<Map<String, Object>> handle(HttpServletRequest request) {
 
-    // Log inicial “HIT” (para Railway sí o sí)
-    log.warn("🔥 STRIPE WEBHOOK HIT uri={} len={} sigPresent={}",
-        req.getRequestURI(),
-        payload != null ? payload.length() : -1,
-        sigHeader != null && !sigHeader.isBlank()
-    );
+    String sigHeader = request.getHeader("Stripe-Signature");
+    String uri = request.getRequestURI();
+
+    String payload;
+    try {
+      payload = StreamUtils.copyToString(request.getInputStream(), StandardCharsets.UTF_8);
+    } catch (Exception e) {
+      log.error("stripe webhook: failed reading body uri={}", uri, e);
+      return ResponseEntity.status(400).body(Map.of("ok", false, "error", "Could not read body"));
+    }
+
+    log.warn("? STRIPE WEBHOOK HIT uri={} len={} sigPresent={}",
+        uri, payload == null ? -1 : payload.length(), (sigHeader != null && !sigHeader.isBlank()));
 
     if (sigHeader == null || sigHeader.isBlank()) {
-      log.warn("stripe webhook missing Stripe-Signature header");
       return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "Missing Stripe-Signature"));
     }
 
@@ -52,56 +56,28 @@ public class StripeWebhookController {
     try {
       event = Webhook.constructEvent(payload, sigHeader, webhookSecret);
     } catch (SignatureVerificationException e) {
-      log.warn("❌ STRIPE SIGNATURE INVALID: {}", e.getMessage());
-      return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "Invalid signature"));
+      log.warn("? STRIPE SIGNATURE INVALID: {}", e.getMessage());
+      return ResponseEntity.status(400).body(Map.of("ok", false, "error", "Invalid signature"));
     } catch (Exception e) {
-      log.error("💥 STRIPE WEBHOOK BAD PAYLOAD", e);
-      return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "Bad payload"));
+      // OJO: aquí entra cuando el JSON está roto / vacío / no es JSON
+      log.error("? STRIPE WEBHOOK BAD PAYLOAD", e);
+      return ResponseEntity.status(400).body(Map.of("ok", false, "error", "Bad payload"));
     }
 
     log.info("stripe webhook received type={} id={}", event.getType(), event.getId());
 
-    // Ignora lo que no manejas, PERO responde 200
-    if (!"checkout.session.completed".equals(event.getType())) {
-      return ResponseEntity.ok(Map.of(
-          "ok", true,
-          "ignored", true,
-          "eventId", event.getId(),
-          "type", event.getType()
-      ));
-    }
-
+    // Procesa solo lo que te interesa (tu service ya filtra y devuelve true en otros)
     try {
-      boolean processed = fulfill.process(event);
-
-      if (!processed) {
-        // Mientras estabilizas: NO 500. Solo log y 200.
+      boolean ok = fulfill.process(event);
+      if (!ok) {
+        // 500 => Stripe reintenta
         log.warn("stripe fulfillment returned false eventId={} type={}", event.getId(), event.getType());
-        return ResponseEntity.ok(Map.of(
-            "ok", false,
-            "processed", false,
-            "eventId", event.getId(),
-            "type", event.getType(),
-            "error", "Fulfillment returned false"
-        ));
+        return ResponseEntity.status(500).body(Map.of("ok", false, "error", "Fulfillment returned false"));
       }
-
-      return ResponseEntity.ok(Map.of(
-          "ok", true,
-          "processed", true,
-          "eventId", event.getId(),
-          "type", event.getType()
-      ));
+      return ResponseEntity.ok(Map.of("ok", true));
     } catch (Exception e) {
-      // Mientras debuggeas: NO 500. Solo log y 200.
       log.error("stripe fulfillment failed eventId={} type={}", event.getId(), event.getType(), e);
-      return ResponseEntity.ok(Map.of(
-          "ok", false,
-          "processed", false,
-          "eventId", event.getId(),
-          "type", event.getType(),
-          "error", "Fulfillment failed"
-      ));
+      return ResponseEntity.status(500).body(Map.of("ok", false, "error", "Fulfillment failed"));
     }
   }
 }
