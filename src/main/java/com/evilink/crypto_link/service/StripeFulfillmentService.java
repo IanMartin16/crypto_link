@@ -2,10 +2,7 @@ package com.evilink.crypto_link.service;
 
 import com.evilink.crypto_link.persistence.ApiKeyRepository;
 import com.evilink.crypto_link.persistence.FulfillmentRepository;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.stripe.Stripe;
-import com.stripe.model.Event;
 import com.stripe.model.Subscription;
 import com.stripe.model.checkout.Session;
 import org.slf4j.Logger;
@@ -42,7 +39,12 @@ public class StripeFulfillmentService {
   @Value("${cryptolink.stripe.price.pro:}")
   private String pricePro;
 
-  public StripeFulfillmentService(JdbcTemplate jdbc, ApiKeyRepository apiKeys, SmtpEmailService email, FulfillmentRepository fulfillRepo) {
+  public StripeFulfillmentService(
+      JdbcTemplate jdbc,
+      ApiKeyRepository apiKeys,
+      SmtpEmailService email,
+      FulfillmentRepository fulfillRepo
+  ) {
     this.jdbc = jdbc;
     this.apiKeys = apiKeys;
     this.email = email;
@@ -50,125 +52,74 @@ public class StripeFulfillmentService {
   }
 
   @Transactional
-  public boolean process(Event event) throws Exception {
+  public boolean processCheckoutCompleted(String eventId, String sessionId) throws Exception {
 
-    if (!"checkout.session.completed".equals(event.getType())) {
-      return true;
-    }
-
-    Session s = extractSession(event);
-    if (s == null) {
-      log.warn("Stripe fulfillment: could not extract session eventId={}", event.getId());
+    if (isBlank(eventId) || isBlank(sessionId)) {
+      log.warn("Stripe fulfillment: missing eventId/sessionId");
       return false;
     }
 
-    String plan = meta(s, "plan");
-
-    String emailTo = null;
-    if (s.getCustomerDetails() != null && s.getCustomerDetails().getEmail() != null) {
-      emailTo = s.getCustomerDetails().getEmail();
-    } else if (s.getCustomerEmail() != null) {
-      emailTo = s.getCustomerEmail();
-    } else {
-      emailTo = meta(s, "email");
+    // 1) idempotencia por eventId
+    if (!reserveEvent(eventId)) {
+      log.info("Stripe fulfillment: duplicate event ignored eventId={}", eventId);
+      return true;
     }
 
-    Session full = null;
-    if (isBlank(plan) || isBlank(emailTo)) {
-      full = retrieveSessionExpanded(s.getId());
-      log.info("Stripe fulfillment: session retrieved sessionId={} subId={}", full.getId(), full.getSubscription());
+    // 2) retrieve session expanded
+    Session session = retrieveSessionExpanded(sessionId);
 
-      if (isBlank(plan)) plan = meta(full, "plan");
+    // 3) plan + email
+    String plan = meta(session, "plan");
+    String emailTo = extractEmail(session);
 
-      if (isBlank(emailTo)) {
-        if (full.getCustomerDetails() != null && full.getCustomerDetails().getEmail() != null) {
-          emailTo = full.getCustomerDetails().getEmail();
-        } else if (full.getCustomerEmail() != null) {
-          emailTo = full.getCustomerEmail();
-        } else {
-          emailTo = meta(full, "email");
-        }
-      }
-    }
+    // debug útil si vuelve a pasar
+    log.warn("Stripe fulfillment debug sessionId={} sessionMeta={} subId={}",
+        sessionId, session.getMetadata(), session.getSubscription());
 
+    // 3b) si falta plan, intenta subscription meta / infer por priceId
     if (isBlank(plan)) {
-      if (full == null) {
-        full = retrieveSessionExpanded(s.getId());
-      }
-      String subId = full.getSubscription();
-
-      String planFromSubMeta = null;
+      String subId = session.getSubscription();
       if (!isBlank(subId)) {
         Subscription subBasic = Subscription.retrieve(subId);
-        if (subBasic.getMetadata() != null) {
-          planFromSubMeta = subBasic.getMetadata().get("plan");
-        }
-      }
-      if (!isBlank(planFromSubMeta)) {
-        plan = planFromSubMeta;
-      } else {
-        plan = inferPlanFromSubscription(subId);
+        String subPlan = subBasic.getMetadata() != null ? subBasic.getMetadata().get("plan") : null;
+        if (!isBlank(subPlan)) plan = subPlan;
+        if (isBlank(plan)) plan = inferPlanFromSubscription(subId);
       }
     }
 
     if (isBlank(plan) || isBlank(emailTo)) {
+      // si faltan datos ya reservamos eventId, pero preferible: marcar y permitir soporte manual
+      // (si quieres reintento automático, habría que NO reservar hasta tener plan/email)
       log.warn("Stripe fulfillment: missing plan/email eventId={} sessionId={} plan={} email={}",
-          event.getId(), s.getId(), plan, emailTo);
+          eventId, sessionId, plan, emailTo);
       return false;
     }
 
     plan = plan.trim().toUpperCase();
     emailTo = emailTo.trim().toLowerCase();
 
-    if (!reserveEvent(event.getId())) {
-      log.info("Stripe fulfillment: duplicate event ignored eventId={}", event.getId());
-      return true;
-    }
-
+    // 4) generar apikey + guardar
     String apiKey = genKey();
     apiKeys.insertKey(apiKey, plan, "ACTIVE", (OffsetDateTime) null);
 
-    fulfillRepo.insert(emailTo, plan, apiKey, "stripe", event.getId(), s.getId());
+    // 5) registrar fulfillment
+    fulfillRepo.insert(emailTo, plan, apiKey, "stripe", eventId, sessionId);
 
+    // 6) email best-effort
     try {
-      email.sendApiKey(emailTo, plan, apiKey);
+      email.sendApiKey(emailTo, plan, apiKey);        // aquí ya estás con Resend por debajo 👍
       fulfillRepo.markEmailSent(emailTo, apiKey);
       log.info("Stripe fulfillment: email sent to={} plan={} apiKey={}", emailTo, plan, mask(apiKey));
     } catch (Exception e) {
       fulfillRepo.markEmailFailed(emailTo, apiKey, e.getMessage());
       log.warn("Stripe fulfillment: email failed to={} plan={} apiKey={}", emailTo, plan, mask(apiKey), e);
+      // NO tumbamos el proceso: DB ya quedó bien
     }
 
     log.info("Stripe fulfillment: completed eventId={} sessionId={} plan={} apiKey={}",
-        event.getId(), s.getId(), plan, mask(apiKey));
+        eventId, sessionId, plan, mask(apiKey));
 
     return true;
-  }
-
-  // ✅ FIX AQUÍ: sin Map/GSON, solo leer "id"
-  private Session extractSession(Event event) throws Exception {
-    var deser = event.getDataObjectDeserializer();
-    var opt = deser.getObject();
-
-    if (opt.isPresent() && opt.get() instanceof Session s) {
-      return s;
-    }
-
-    String rawJson = deser.getRawJson();
-    if (rawJson == null || rawJson.isBlank()) return null;
-
-    String sessionId;
-    try {
-      JsonObject obj = JsonParser.parseString(rawJson).getAsJsonObject();
-      sessionId = (obj.has("id") && !obj.get("id").isJsonNull()) ? obj.get("id").getAsString() : null;
-    } catch (Exception e) {
-      log.warn("Stripe fulfillment: could not parse rawJson for session id eventId={}", event.getId(), e);
-      return null;
-    }
-
-    if (isBlank(sessionId)) return null;
-
-    return retrieveSessionExpanded(sessionId);
   }
 
   private Session retrieveSessionExpanded(String sessionId) throws Exception {
@@ -207,7 +158,20 @@ public class StripeFulfillmentService {
 
     log.warn("Stripe fulfillment: unknown priceId={} (expected pro={} business={})",
         priceId, pricePro, priceBusiness);
+
     return null;
+  }
+
+  private String extractEmail(Session s) {
+    if (s == null) return null;
+
+    if (s.getCustomerDetails() != null && s.getCustomerDetails().getEmail() != null) {
+      return s.getCustomerDetails().getEmail();
+    }
+    if (s.getCustomerEmail() != null) {
+      return s.getCustomerEmail();
+    }
+    return meta(s, "email");
   }
 
   private void ensureStripeKey() {
