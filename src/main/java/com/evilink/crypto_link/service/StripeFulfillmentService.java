@@ -2,11 +2,12 @@ package com.evilink.crypto_link.service;
 
 import com.evilink.crypto_link.persistence.ApiKeyRepository;
 import com.evilink.crypto_link.persistence.FulfillmentRepository;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.stripe.Stripe;
 import com.stripe.model.Event;
 import com.stripe.model.Subscription;
 import com.stripe.model.checkout.Session;
-import com.stripe.net.ApiResource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -51,19 +52,16 @@ public class StripeFulfillmentService {
   @Transactional
   public boolean process(Event event) throws Exception {
 
-    // ✅ Ignora eventos no soportados (webhook "OK")
     if (!"checkout.session.completed".equals(event.getType())) {
       return true;
     }
 
-    // 1) Obtener Session (deserializada o fallback)
     Session s = extractSession(event);
     if (s == null) {
       log.warn("Stripe fulfillment: could not extract session eventId={}", event.getId());
       return false;
     }
 
-    // 2) plan + email (primero del objeto recibido)
     String plan = meta(s, "plan");
 
     String emailTo = null;
@@ -75,7 +73,6 @@ public class StripeFulfillmentService {
       emailTo = meta(s, "email");
     }
 
-    // 2b) Fallback fuerte: retrieve + expand customer/subscription
     Session full = null;
     if (isBlank(plan) || isBlank(emailTo)) {
       full = retrieveSessionExpanded(s.getId());
@@ -94,14 +91,12 @@ public class StripeFulfillmentService {
       }
     }
 
-    // 2c) Si sigue faltando plan: inferirlo por priceId de la Subscription
     if (isBlank(plan)) {
       if (full == null) {
         full = retrieveSessionExpanded(s.getId());
       }
       String subId = full.getSubscription();
 
-      // 1) intenta metadata de subscription
       String planFromSubMeta = null;
       if (!isBlank(subId)) {
         Subscription subBasic = Subscription.retrieve(subId);
@@ -112,13 +107,11 @@ public class StripeFulfillmentService {
       if (!isBlank(planFromSubMeta)) {
         plan = planFromSubMeta;
       } else {
-        // 2) inferir por priceId (definitivo)
         plan = inferPlanFromSubscription(subId);
       }
     }
 
     if (isBlank(plan) || isBlank(emailTo)) {
-      // OJO: no reservamos eventId si faltan datos -> permite retry
       log.warn("Stripe fulfillment: missing plan/email eventId={} sessionId={} plan={} email={}",
           event.getId(), s.getId(), plan, emailTo);
       return false;
@@ -127,24 +120,19 @@ public class StripeFulfillmentService {
     plan = plan.trim().toUpperCase();
     emailTo = emailTo.trim().toLowerCase();
 
-    // 3) Idempotencia por eventId
     if (!reserveEvent(event.getId())) {
       log.info("Stripe fulfillment: duplicate event ignored eventId={}", event.getId());
       return true;
     }
 
-    // 4) Genera apiKey + inserta
     String apiKey = genKey();
     apiKeys.insertKey(apiKey, plan, "ACTIVE", (OffsetDateTime) null);
 
     fulfillRepo.insert(emailTo, plan, apiKey, "stripe", event.getId(), s.getId());
 
-
-    // 5) Email best-effort (no tumba DB)
     try {
       email.sendApiKey(emailTo, plan, apiKey);
       fulfillRepo.markEmailSent(emailTo, apiKey);
-
       log.info("Stripe fulfillment: email sent to={} plan={} apiKey={}", emailTo, plan, mask(apiKey));
     } catch (Exception e) {
       fulfillRepo.markEmailFailed(emailTo, apiKey, e.getMessage());
@@ -157,6 +145,7 @@ public class StripeFulfillmentService {
     return true;
   }
 
+  // ✅ FIX AQUÍ: sin Map/GSON, solo leer "id"
   private Session extractSession(Event event) throws Exception {
     var deser = event.getDataObjectDeserializer();
     var opt = deser.getObject();
@@ -165,13 +154,18 @@ public class StripeFulfillmentService {
       return s;
     }
 
-    // Fallback: usar rawJson para obtener id y hacer retrieve
     String rawJson = deser.getRawJson();
     if (rawJson == null || rawJson.isBlank()) return null;
 
-    @SuppressWarnings("unchecked")
-    Map<String, Object> raw = ApiResource.GSON.fromJson(rawJson, Map.class);
-    String sessionId = raw == null ? null : (String) raw.get("id");
+    String sessionId;
+    try {
+      JsonObject obj = JsonParser.parseString(rawJson).getAsJsonObject();
+      sessionId = (obj.has("id") && !obj.get("id").isJsonNull()) ? obj.get("id").getAsString() : null;
+    } catch (Exception e) {
+      log.warn("Stripe fulfillment: could not parse rawJson for session id eventId={}", event.getId(), e);
+      return null;
+    }
+
     if (isBlank(sessionId)) return null;
 
     return retrieveSessionExpanded(sessionId);
@@ -193,7 +187,6 @@ public class StripeFulfillmentService {
     ensureStripeKey();
     Stripe.apiKey = stripeSecretKey;
 
-    // Expand para traer price en items
     Map<String, Object> params = new java.util.HashMap<>();
     params.put("expand", List.of("items.data.price"));
     Subscription sub = Subscription.retrieve(subId, params, null);
