@@ -15,7 +15,6 @@ public class SmtpEmailService {
   private static final Logger log = LoggerFactory.getLogger(SmtpEmailService.class);
 
   private final Resend resend;
-
   private final String from;
 
   public SmtpEmailService(
@@ -29,9 +28,8 @@ public class SmtpEmailService {
       throw new IllegalStateException("cryptolink.resend.api-key must start with re_...");
     }
     if (from == null || from.isBlank()) {
-      throw new IllegalStateException("Missing cryptolink.resend.from (e.g. CryptoLink <no-reply@evilink.dev>)");
+      throw new IllegalStateException("Missing cryptolink.resend.from (Name <email@domain>)");
     }
-
     this.resend = new Resend(apiKey);
     this.from = from.trim();
   }
@@ -46,7 +44,6 @@ public class SmtpEmailService {
 
     String subject = "CryptoLink: tu API Key (" + p + ")";
 
-    // Texto plano (por si el cliente de correo no renderiza HTML)
     String text = """
         ¡Listo!
         
@@ -56,7 +53,6 @@ public class SmtpEmailService {
         Guárdala en un lugar seguro. Si crees que se filtró, genera otra.
         """.formatted(p, apiKey);
 
-    // HTML simple y claro
     String html = """
         <div style="font-family:Arial,sans-serif;line-height:1.5">
           <h2>CryptoLink</h2>
@@ -78,8 +74,27 @@ public class SmtpEmailService {
         .html(html)
         .build();
 
-    CreateEmailResponse resp = resend.emails().send(params);
-    log.info("Resend: email queued id={} to={} plan={}", resp.getId(), email, p);
+    ResendException last = null;
+
+    for (int attempt = 1; attempt <= 2; attempt++) {
+      try {
+        CreateEmailResponse resp = resend.emails().send(params);
+        log.info("Resend: email queued id={} to={} plan={}", resp.getId(), email, p);
+        return;
+      } catch (ResendException e) {
+        last = e;
+        int sc = e.getStatusCode();
+        log.warn("Resend: send failed attempt={} statusCode={} name={} message={}",
+            attempt, sc, e.getErrorName(), e.getMessage());
+
+        boolean retryable = (sc == 429) || (sc >= 500 && sc <= 599);
+        if (!retryable || attempt == 2) throw e;
+
+        try { Thread.sleep(600L * attempt); } catch (InterruptedException ignored) {}
+      }
+    }
+
+    throw last; // debería no llegar
   }
 
   private static String escapeHtml(String s) {

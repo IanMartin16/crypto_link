@@ -36,8 +36,8 @@ public class ApiKeyRepository {
 
     public int insertKey(String apiKey, String plan, String status, OffsetDateTime expiresAt) {
     return jdbc.update("""
-        insert into cryptolink_api_keys (api_key, plan, status, expires_at)
-        values (?, ?, ?, ?)
+        insert into cryptolink_api_keys (api_key, plan, status, expires_at, created_at)
+        values (?, ?, ?, ?, now())
         on conflict (api_key) do nothing
     """, apiKey, plan, status, expiresAt);
     }
@@ -64,6 +64,33 @@ public class ApiKeyRepository {
             set expires_at = ?
             where api_key = ?
         """, expiresAt, apiKey);
+    }
+
+    public Optional<ApiKeyRow> findActiveByKey(String apiKey) {
+        return jdbc.query("""
+            select api_key, plan, status, expires_at
+            from cryptolink_api_keys
+            where api_key = ? and status = 'ACTIVE'
+            limit 1
+            """,
+            rs -> rs.next()
+                ? Optional.of(new ApiKeyRow(
+                    rs.getString("api_key"),
+                    rs.getString("plan"),
+                    rs.getString("status"),
+                    rs.getObject("expires_at", OffsetDateTime.class)
+                ))
+                : Optional.empty(),
+            apiKey
+        );
+    }
+
+    public void deactivate(String apiKey) {
+        jdbc.update("""
+        update cryptolink_api_keys
+        set status = 'DISABLED'
+        where api_key = ?
+        """, apiKey);
     }
 
 

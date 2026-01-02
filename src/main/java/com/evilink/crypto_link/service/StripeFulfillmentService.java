@@ -1,6 +1,7 @@
 package com.evilink.crypto_link.service;
 
 import com.evilink.crypto_link.persistence.ApiKeyRepository;
+import com.evilink.crypto_link.persistence.FulfillmentRepository;
 import com.stripe.Stripe;
 import com.stripe.model.Event;
 import com.stripe.model.Subscription;
@@ -27,6 +28,7 @@ public class StripeFulfillmentService {
   private final JdbcTemplate jdbc;
   private final ApiKeyRepository apiKeys;
   private final SmtpEmailService email;
+  private final FulfillmentRepository fulfillRepo;
 
   private final Random rnd = new Random();
 
@@ -39,10 +41,11 @@ public class StripeFulfillmentService {
   @Value("${cryptolink.stripe.price.pro:}")
   private String pricePro;
 
-  public StripeFulfillmentService(JdbcTemplate jdbc, ApiKeyRepository apiKeys, SmtpEmailService email) {
+  public StripeFulfillmentService(JdbcTemplate jdbc, ApiKeyRepository apiKeys, SmtpEmailService email, FulfillmentRepository fulfillRepo) {
     this.jdbc = jdbc;
     this.apiKeys = apiKeys;
     this.email = email;
+    this.fulfillRepo = fulfillRepo;
   }
 
   @Transactional
@@ -76,10 +79,7 @@ public class StripeFulfillmentService {
     Session full = null;
     if (isBlank(plan) || isBlank(emailTo)) {
       full = retrieveSessionExpanded(s.getId());
-
-      // DEBUG (puedes bajar a INFO cuando quede)
-      log.warn("Stripe fulfillment debug sessionId={} sessionMeta={} subId={}",
-          full.getId(), full.getMetadata(), full.getSubscription());
+      log.info("Stripe fulfillment: session retrieved sessionId={} subId={}", full.getId(), full.getSubscription());
 
       if (isBlank(plan)) plan = meta(full, "plan");
 
@@ -137,11 +137,17 @@ public class StripeFulfillmentService {
     String apiKey = genKey();
     apiKeys.insertKey(apiKey, plan, "ACTIVE", (OffsetDateTime) null);
 
+    fulfillRepo.insert(emailTo, plan, apiKey, "stripe", event.getId(), s.getId());
+
+
     // 5) Email best-effort (no tumba DB)
     try {
       email.sendApiKey(emailTo, plan, apiKey);
+      fulfillRepo.markEmailSent(emailTo, apiKey);
+
       log.info("Stripe fulfillment: email sent to={} plan={} apiKey={}", emailTo, plan, mask(apiKey));
     } catch (Exception e) {
+      fulfillRepo.markEmailFailed(emailTo, apiKey, e.getMessage());
       log.warn("Stripe fulfillment: email failed to={} plan={} apiKey={}", emailTo, plan, mask(apiKey), e);
     }
 
