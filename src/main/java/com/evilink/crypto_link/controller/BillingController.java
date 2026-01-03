@@ -7,9 +7,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.util.UriComponentsBuilder;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
 
@@ -38,6 +37,7 @@ public class BillingController {
       @RequestHeader(name = "Idempotency-Key", required = false) String idemKey
   ) throws Exception {
 
+    // ---- Validaciones base
     if (stripeSecret == null || stripeSecret.isBlank()) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Stripe not configured");
     }
@@ -51,9 +51,11 @@ public class BillingController {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Missing email");
     }
 
+    // ---- Normaliza input
     String p = (plan == null) ? "" : plan.trim().toUpperCase();
     String email = body.email().trim().toLowerCase();
 
+    // ---- Plan -> priceId
     String priceId = switch (p) {
       case "BUSINESS" -> priceBusiness;
       case "PRO" -> pricePro;
@@ -64,31 +66,32 @@ public class BillingController {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "PriceId not configured for plan " + p);
     }
 
-    // Stripe key
+    // ---- Stripe key
     Stripe.apiKey = stripeSecret;
 
-    // ✅ Idempotencia:
-    // Si cliente manda Idempotency-Key, úsalo. Si no, generamos uno por request para no amarrarte en pruebas.
+    // ---- Idempotencia:
+    // Si el cliente manda header, úsalo. Si no, uno por request (ideal en pruebas).
     String idempotencyKey = (idemKey == null || idemKey.isBlank())
         ? ("cryptolink_" + UUID.randomUUID())
         : idemKey.trim();
 
-    // URLs
-    String successUrl = landingUrl + "?status=success&plan=" + url(p);
-    String cancelUrl  = landingUrl + "?status=cancel&plan=" + url(p);
+    // ---- URLs (blindadas, sin concatenación manual)
+    String successUrl = buildLandingUrl("success", p);
+    String cancelUrl  = buildLandingUrl("cancel",  p);
 
+    // ---- Crea sesión de Checkout
     SessionCreateParams params = SessionCreateParams.builder()
         .setMode(SessionCreateParams.Mode.SUBSCRIPTION)
         .setCustomerEmail(email)
         .setSuccessUrl(successUrl)
         .setCancelUrl(cancelUrl)
 
-        // ✅ metadata EN LA SESIÓN (esto arregla "missing plan/email" en webhook)
+        // ✅ metadata EN LA SESIÓN (clave para webhook)
         .putMetadata("app", "cryptolink")
         .putMetadata("plan", p)
         .putMetadata("email", email)
 
-        // (opcional) tracking útil
+        // tracking útil
         .setClientReferenceId("cryptolink_" + p + "_" + email)
 
         .addLineItem(
@@ -123,7 +126,17 @@ public class BillingController {
     );
   }
 
-  private static String url(String s) {
-    return URLEncoder.encode(s, StandardCharsets.UTF_8);
+  private String buildLandingUrl(String status, String plan) {
+    if (landingUrl == null || landingUrl.isBlank()) {
+      throw new IllegalStateException("app.landing-url not configured");
+    }
+
+    // Tip: si landingUrl trae espacios o trailing slash, lo limpiamos leve
+    return UriComponentsBuilder
+        .fromUriString(landingUrl.trim())
+        .queryParam("status", status)
+        .queryParam("plan", plan)
+        .build(true)
+        .toUriString();
   }
 }
