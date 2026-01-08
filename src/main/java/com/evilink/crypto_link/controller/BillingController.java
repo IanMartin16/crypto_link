@@ -136,6 +136,7 @@ public class BillingController {
         .fromUriString(landingUrl.trim())
         .queryParam("status", status)
         .queryParam("plan", plan)
+        .fragment("purchase") //  regresa directo al widget
         .build(true)
         .toUriString();
   }
