@@ -16,10 +16,12 @@ public class SmtpEmailService {
 
   private final Resend resend;
   private final String from;
+  private final String portalUrl;
 
   public SmtpEmailService(
       @Value("${cryptolink.resend.api-key:}") String apiKey,
-      @Value("${cryptolink.resend.from:}") String from
+      @Value("${cryptolink.resend.from:}") String from,
+      @Value("${cryptolink.stripe.portal-url:}") String portalUrl
   ) {
     if (apiKey == null || apiKey.isBlank()) {
       throw new IllegalStateException("Missing cryptolink.resend.api-key (expected re_...)");
@@ -32,6 +34,7 @@ public class SmtpEmailService {
     }
     this.resend = new Resend(apiKey);
     this.from = from.trim();
+    this.portalUrl = portalUrl;
   }
 
   public void sendApiKey(String to, String plan, String apiKey) throws ResendException {
@@ -44,6 +47,10 @@ public class SmtpEmailService {
 
     String subject = "CryptoLink: tu API Key (" + p + ")";
 
+    String manageLine = "";
+    if (!portalUrl.isBlank()) {
+      manageLine = "\n\nAdministrar suscripcion / Cancelar:\n" + portalUrl + "\n";
+    }
     String text = """
         ¡Listo!
         
@@ -52,6 +59,24 @@ public class SmtpEmailService {
         
         Guárdala en un lugar seguro. Si crees que se filtró, genera otra.
         """.formatted(p, apiKey);
+
+    String portalBlockHtml = "";
+    if (!portalUrl.isBlank()) {
+      String safeUrl = escapeHtml(portalUrl);
+      portalBlockHtml = """
+          <hr/>
+          <p><b>Administrar suscripción</b> (cambiar tarjeta / cancelar):</p>
+          <p>
+            <a href="%s" target="_blank" rel="noopener noreferrer"
+               style="display:inline-block;padding:12px 16px;border-radius:10px;text-decoration:none;background:#635bff;color:white;">
+              Administrar suscripción / Cancelar
+            </a>
+          </p>
+          <p style="font-size:12px;color:#666">
+            Si cancelas, normalmente el acceso se mantiene hasta el final del periodo ya pagado.
+          </p>
+          """.formatted(safeUrl);
+    }    
 
     String html = """
         <div style="font-family:Arial,sans-serif;line-height:1.5">
@@ -64,7 +89,7 @@ public class SmtpEmailService {
           <hr/>
           <p style="font-size:12px;color:#666">Este correo fue enviado automáticamente.</p>
         </div>
-        """.formatted(escapeHtml(p), escapeHtml(apiKey));
+        """.formatted(escapeHtml(p), escapeHtml(apiKey), portalBlockHtml);
 
     CreateEmailOptions params = CreateEmailOptions.builder()
         .from(this.from)
