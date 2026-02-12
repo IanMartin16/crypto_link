@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { clearApiKey, getApiKey, setApiKey } from "@/lib/apiKey";
+import { UI } from "@/lib/ui";
+
 
 export default function ApiKeyBar() {
   const [value, setValue] = useState("");
@@ -12,7 +14,14 @@ export default function ApiKeyBar() {
   }, []);
 
   return (
-    <section style={{ marginTop: 16, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
+    <section 
+      style={{ 
+        marginTop: 16, 
+        padding: 16, 
+        border: `1px solid ${UI.border}`, 
+        borderRadius: 14, 
+        background: UI.panel
+        }}>
       <h2 style={{ margin: 0 }}>API Key</h2>
       <p style={{ marginTop: 8, opacity: 0.8 }}>
         Pega tu key para que el dashboard pueda consumir <code>/v1/prices</code>.

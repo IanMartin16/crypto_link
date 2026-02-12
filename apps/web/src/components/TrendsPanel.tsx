@@ -1,11 +1,19 @@
 import { fetchTrends } from "@/lib/socialLink";
+import { UI } from "@/lib/ui";
+
 
 export default async function TrendsPanel() {
   try {
     const trends = await fetchTrends(["BTC", "ETH"]);
 
     return (
-      <section style={{ marginTop: 16, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
+      <section 
+         style={{ 
+          marginTop: 16, 
+          padding: 16, 
+          border: `1px solid ${UI.border}`, 
+          borderRadius: 14 
+          }}>
         <h2 style={{ margin: 0 }}>Trends (Social_link)</h2>
         <p style={{ marginTop: 8, opacity: 0.8 }}>
           Última actualización: <code>{trends.ts}</code>
@@ -22,7 +30,14 @@ export default async function TrendsPanel() {
     );
   } catch (e: any) {
     return (
-      <section style={{ marginTop: 16, padding: 16, border: "1px solid #f00", borderRadius: 12 }}>
+      <section 
+        style={{ 
+          marginTop: 16, 
+          padding: 16, 
+          border: `1px solid ${UI.border}`, 
+          borderRadius: 14,
+          background: UI.panel  
+          }}>
         <h2 style={{ margin: 0 }}>Trends (Social_link)</h2>
         <p style={{ marginTop: 8 }}>
           Error conectando a Social_link: <b>{e?.message ?? "unknown"}</b>
