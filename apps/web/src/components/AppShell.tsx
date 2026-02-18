@@ -1,5 +1,9 @@
+"use client"
+
 import { ReactNode, useState } from "react";
 import { UI } from "@/lib/ui";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 type NavItem = { label: string; active?: boolean; hint?: string };
 
@@ -14,6 +18,29 @@ export default function AppShell({ children }: { children: ReactNode }) {
     { label: "Billing", hint: "Soon" },
     { label: "Settings", hint: "Soon" },
   ];
+
+  const pathname = usePathname();
+
+  const items = [
+    { label: "Overview", href: "/dashboard" },
+    { label: "Prices", href: "/dashboard/prices" },
+    { label: "Trends", href: "/dashboard/trends" },
+    { label: "Settings", href: "/dashboard/settings" },
+    { label: "Symbols", href: "/dashboard/symbols" },
+  ];
+
+  const isActive = (href: string) => {
+    if (href === "/dashboard") return pathname === "/dashboard";
+    return pathname.startsWith(href);
+  };
+
+  <style jsx global>{`
+    @keyframes pulseDot {
+      0% { transform: scale(1); opacity: 0.75; }
+      50% { transform: scale(1.35); opacity: 1; }
+      100% { transform: scale(1); opacity: 0.75; }
+    }
+  `}</style>
 
   return (
     <div
@@ -44,7 +71,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
               placeItems: "center",
               border: `1px solid ${UI.border}`,
               background: "rgba(255,255,255,0.03)",
-              boxShadow: "0 0 18px rgba(255,159,67,0.18)",
+              boxShadow: "0 0 18px rgba(255,159,67,0.12)",
               overflow: "hidden",
             }}
           >
@@ -119,45 +146,59 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
 
-        {/* Nav */}
-        <nav style={{ marginTop: 16, display: "grid", gap: 8 }}>
-          {nav.map((item) => {
-            const active = !!item.active;
-            const isHover = hover === item.label;
-
+        <nav style={{ marginTop: 18, display: "grid", gap: 8 }}>
+          {items.map((item) => {
+            const active = pathname === item.href;
             return (
+              <Link 
+                key={item.href} 
+                href={item.href} 
+                style={{ textDecoration: "none", color: "inherit" }}>
               <div
-                key={item.label}
-                onMouseEnter={() => setHover(item.label)}
-                onMouseLeave={() => setHover(null)}
                 style={{
                   padding: "10px 12px",
-                  borderRadius: 14,
-                  border: `1px solid ${UI.border}`,
-                  background: active
-                    ? "rgba(255,159,67,0.10)"
-                    : isHover
-                    ? "rgba(255,255,255,0.05)"
-                    : "transparent",
-                  cursor: "default",
-                  fontWeight: active ? 900 : 700,
+                  borderRadius: 12,
+                  border: active ? "1px solid rgba(255,159,67,0.22)" : "1px solid rgba(255,255,255,0.08)",
+                  background: active ? "rgba(255,159,67,0.08)" : "transparent",
+                  cursor: "pointer",
+                  fontWeight: active ? 900 : 650,
                   opacity: active ? 1 : 0.9,
-                  boxShadow: active ? "0 0 22px rgba(255,159,67,0.12)" : "none",
-                  transition: "background 120ms ease, box-shadow 120ms ease, transform 120ms ease",
-                  transform: isHover && !active ? "translateX(1px)" : "translateX(0px)",
+                  transition: "all 140ms ease",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                  <span>{item.label}</span>
-                  {item.hint && (
-                    <span style={{ fontSize: 12, opacity: active ? 0.85 : 0.6 }}>{item.hint}</span>
-                  )}
+                <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 999,
+                    background: active ? UI.orangeSoft : "rgba(255,255,255,0.18)",
+                    boxShadow: active ? "0 0 12px rgba(255,159,67,0.28)" : "none",
+                    transition: "all 140ms ease",
+                }}
+              />
+                {item.label}
+                </span>
+
+                {/* barrita derecha cuando está activo */}
+                <span
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 999,
+                    background: active ? UI.orangeSoft : "transparent",
+                    boxShadow: active ? "0 0 14px rgba(255,159,67,0.32)" : "none",
+                    }}
+                  />
                 </div>
-              </div>
+              </Link>
             );
           })}
         </nav>
-
+  
         {/* Footer tip */}
         <div
           style={{
@@ -171,50 +212,47 @@ export default function AppShell({ children }: { children: ReactNode }) {
             lineHeight: 1.4,
           }}
         >
-          Tip: mañana hacemos navegación real (Overview/Prices/Trends) sin librerías pesadas.
+    
         </div>
       </aside>
 
       {/* Main */}
-      <main style={{ padding: 24 }}>
-        <div style={{ maxWidth: 1250, margin: "0 auto" }}>
+      <main
+        style={{
+          padding: 24,
+          position: "relative",
+          overflow: "hidden",
+        }}
+      >
         <div
+          aria-hidden
           style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 12,
-            marginBottom: 14,
-            padding: "10px 12px",
-            borderRadius: 14,
-            border: `1px solid ${UI.border}`,
-            background: "rgba(255,255,255,0.02)",
+            position: "absolute",
+            inset: -200,
+            background:
+              "radial-gradient(600px 360px at 70% 10%, rgba(255,159,67,0.10), transparent 60%), radial-gradient(520px 320px at 20% 30%, rgba(46,229,157,0.06), transparent 60%)",
+            pointerEvents: "none",
+            filter: "blur(2px)",
           }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontWeight: 950 }}>Overview</span>
-            <span style={{ fontSize: 12, opacity: 0.7 }}>batch pricing · social movers</span>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span
-              style={{
-                padding: "3px 10px",
-                borderRadius: 999,
-                border: `1px solid rgba(255,159,67,0.22)`,
-                background: "rgba(255,159,67,0.10)",
-                color: UI.orangeSoft,
-                fontSize: 12,
-                fontWeight: 900,
-              }}
-            >
-              cryptolink.mx
-            </span>
-            <span style={{ fontSize: 12, opacity: 0.75 }}>local</span>
-          </div>
-        </div>
-        {children}</div>
-      </main>
+      />
+      <style jsx global>{`
+        @keyframes clPulse {
+        0% { transform: scale(1); opacity: 0.75; }
+        50% { transform: scale(1.35); opacity: 1; }
+        100% { transform: scale(1); opacity: 0.75; }
+      }
+    `}</style>
+    <style>{`
+        @keyframes clSweep {
+          0%   { transform: translateX(-70%); opacity: .35; }
+          40%  { opacity: .95; }
+          100% { transform: translateX(70%);  opacity: .10; }
+        }
+      `}</style>
+      <div style={{ position: "relative", zIndex: 1, maxWidth: 1250, margin: "0 auto" }}>
+        {children}
+      </div>
+    </main>
     </div>
   );
 }

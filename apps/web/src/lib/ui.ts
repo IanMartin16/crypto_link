@@ -14,4 +14,13 @@ export const UI = {
 
   green: "#2ee59d",
   red: "#ff6b6b",
+
+  gap: 14,
+  gapLg: 18,
+  pad: 16,
+  padLg: 18,
+  radius: 14,
+  radiusLg: 16,
+  textSm: 12,
+  textMd: 14,
 };

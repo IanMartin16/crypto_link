@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import AppShell from "@/components/AppShell";
 import ApiKeyBar from "@/components/ApiKeyBar";
 import FiatToggle from "@/components/FiatToggle";
 import PricesPanel from "@/components/PricesPanel";
@@ -10,78 +9,32 @@ import TrendsTable from "@/components/TrendsTable";
 import SymbolsEditor from "@/components/SymbolsEditor";
 import StatusBar from "@/components/StatusBar";
 import { UI } from "@/lib/ui";
+import type { Health } from "@/lib/health";
+import { HEALTH_OK } from "@/lib/health";
+import TopHeader, { Chip } from "@/components/TopHeader";
 
 export default function DashboardPage() {
   const [rows, setRows] = useState<any[]>([]);
-  const [pricesHealth, setPricesHealth] = useState({ ok: true } as any);
-  const [trendsHealth, setTrendsHealth] = useState({ ok: true } as any);
+  const [pricesHealth, setPricesHealth] = useState<Health>(HEALTH_OK);
+  const [trendsHealth, setTrendsHealth] = useState<Health>(HEALTH_OK);
 
   return (
-    <AppShell>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          marginBottom: 14,
-          padding: "12px 14px",
-          borderRadius: 16,
-          border: `1px solid ${UI.border}`,
-          background: "rgba(255,255,255,0.02)",
-          boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: 14,
-              display: "grid",
-              placeItems: "center",
-              border: `1px solid ${UI.border}`,
-              background: "rgba(255,255,255,0.03)",
-              boxShadow: "0 0 22px rgba(255,159,67,0.18)",
-              overflow: "hidden",
-            }}
-          >
-            <img
-              src="/brand/cryptolink.png"
-              alt="CryptoLink"
-              style={{ width: 30, height: 30, objectFit: "contain" }}
-          />
-        </div>
-
-        <div>
-          <div style={{ fontSize: 26, fontWeight: 950, letterSpacing: 0.2 }}>
-            CryptoLink <span style={{ color: UI.orange }}>V2</span>
-          </div>
-        <div style={{ fontSize: 12, opacity: 0.75 }}>
-            Dashboard · batch pricing · social movers
-        </div>
-      </div>
-    </div>
-
-    {/* lado derecho: “pill” */}
-    <div
-      style={{
-        padding: "8px 12px",
-        borderRadius: 999,
-        border: `1px solid ${UI.border}`,
-        background: "rgba(255,255,255,0.03)",
-        display: "flex",
-        gap: 8,
-        alignItems: "center",
-        fontSize: 12,
-        opacity: 0.9,
-      }}
-    >
-      <span style={{ color: UI.orangeSoft, fontWeight: 900 }}>LIVE</span>
-      <span style={{ opacity: 0.6 }}>·</span>
-      <span style={{ opacity: 0.85 }}>5s refresh</span>
-    </div>
-  </div>
+    <>
+      <TopHeader
+        title={
+      <>
+        CryptoLink <span style={{ color: UI.orange }}>V2</span>
+      </>
+      }
+      subtitle={"Dashboard · batch pricing · social movers"}
+      right={
+      <>
+        <Chip>LIVE</Chip>
+        <Chip>refresh: 5s</Chip>
+        <Chip>batch BFF</Chip>
+      </>
+      }
+    />
 
     <div style={{ display: "grid", gap: 14 }}>
       <StatusBar prices={pricesHealth} trends={trendsHealth} />
@@ -109,6 +62,6 @@ export default function DashboardPage() {
           <SymbolsEditor />
         </div>
       </div>  
-    </AppShell>
+    </>
   );
 }

@@ -1,10 +1,13 @@
 "use client";
 
 import { useMemo, useEffect, useState } from "react";
+import Sparkline from "@/components/Sparkline";
+import { usePriceHistory } from "@/lib/usePriceHistory";
+import { formatMoney, shortTime, shortTs } from "@/lib/format";
 
 function formatPrice(value: number, fiat: string) {
   try {
-    return new Intl.NumberFormat("en-US", {
+    return new formatMoney("en-US", {
       style: "currency",
       currency: fiat,
       maximumFractionDigits: fiat === "JPY" ? 0 : 2,
@@ -27,13 +30,20 @@ export default function HeroPriceCard({
 }) {
   const priceNode = useMemo(() => {
     if (typeof price !== "number") return "—";
-    return formatPrice(price, fiat);
+    return formatMoney(price, fiat);
   }, [price, fiat]);
 
   useEffect(() => {
   console.log("[HeroPriceCard mount]", symbol);
   return () => console.log("[HeroPriceCard unmount]", symbol);
 }, [symbol]);
+
+  const hist = usePriceHistory(symbol, price, 30);
+  const lastMove = hist.length >= 2 ? hist[hist.length - 1] - hist[hist.length - 2] : 0;
+  const sparkStroke =
+    lastMove > 0 ? "rgba(46,229,157,0.85)" : lastMove < 0 ? "rgba(255,107,107,0.85)" : "rgba(255,159,67,0.85)";
+  const sparkFill =
+    lastMove > 0 ? "rgba(46,229,157,0.10)" : lastMove < 0 ? "rgba(255,107,107,0.10)" : "rgba(255,159,67,0.10)";
 
   // ✅ Label correcto: HIT = cache, MISS = live
   const cacheLabel = cache === "HIT" ? "CACHE" : "LIVE";
@@ -138,19 +148,25 @@ export default function HeroPriceCard({
         {priceNode}
       </div>
 
-      <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
+      <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <span
           style={{
             padding: "2px 10px",
             borderRadius: 999,
             fontSize: 12,
             fontWeight: 800,
-            ...badgeStyle,
+            border: "1px solid rgba(255,159,67,0.20)",
+            background: "rgba(255,159,67,0.10)",
+            color: "#ffb86b",
+            whiteSpace: "nowrap",
           }}
         >
-          {cacheLabel}
+        {cacheLabel}
         </span>
+      <div style={{ opacity: 0.95 }}>
+        <Sparkline values={hist} w={120} h={28} stroke={sparkStroke} fill={sparkFill} />
       </div>
+    </div>
     </div>
   );
 }

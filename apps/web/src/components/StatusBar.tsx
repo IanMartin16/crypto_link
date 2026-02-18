@@ -1,4 +1,5 @@
 "use client";
+import type { Health } from "@/lib/health";
 
 function fmt(iso?: string) {
   if (!iso) return "—";
@@ -77,8 +78,8 @@ export default function StatusBar({
   prices,
   trends,
 }: {
-  prices?: { ok: boolean; lastOkAt?: string; lastErr?: string };
-  trends?: { ok: boolean; lastOkAt?: string; lastErr?: string };
+  prices?: Health;
+  trends?: Health;
 }) {
   return (
     <div
@@ -90,8 +91,8 @@ export default function StatusBar({
         alignItems: "center",
       }}
     >
-      <Pill label="Prices" h={prices} />
-      <Pill label="Trends" h={trends} />
+      { prices && <Pill label="Prices"  h={prices} /> }
+      { trends && <Pill label="Trends" h={trends} /> }
 
       <div
         style={{
