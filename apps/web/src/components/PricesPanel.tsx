@@ -8,12 +8,11 @@ import { getSymbols } from "@/lib/symbolsStore";
 import { fetchPricesBatch } from "@/lib/cryptoLink";
 import { Skeleton } from "@/components/Skeleton";
 import Toast from "@/components/Toast";
-import Chip from "@/components/ui/Chip";
-import { formatMoney, shortTime } from "@/lib/format";
 import type { Health } from "@/lib/health";
+import SymbolCell from "@/components/SymbolCell";
+import type { PriceRow } from "@/lib/types";
 
-// Si ya tienes CacheBadge en otro archivo, importa el tuyo.
-// Aquí lo dejo inline para que no falle.
+// CacheBadge inline.
 function CacheBadge({ v }: { v?: string }) {
   const val = (v ?? "MISS").toUpperCase();
 
@@ -74,16 +73,14 @@ function RefreshDot({ on }: { on: boolean }) {
     );
   }
 
-type Row = { symbol: string; fiat: string; price?: number; cache?: string; ok?: boolean; err?: string; ts?: string; source?: string; updatedAt?: string };
-
 export default function PricesPanel({
   onRows,
   onHealth,
 }: {
-  onRows?: (rows: Row[]) => void;
+  onRows?: (rows: PriceRow[]) => void;
   onHealth?: (h: Health) => void;
 }) {
-  const [rows, setRows] = useState<Row[]>([]);
+  const [rows, setRows] = useState<PriceRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [updatingFiat, setUpdatingFiat] = useState(false);
@@ -128,7 +125,7 @@ async function load(kind: "initial" | "refresh" = "refresh") {
     const res = await fetchPricesBatch(symbols, fiat, apiKey);
     if (seq !== reqSeq.current) return;
 
-    const mapped: Row[] = (res.data ?? []).map((item: any) => {
+    const mapped: PriceRow[] = (res.data ?? []).map((item: any) => {
       const d = item.data;
       const price = d?.price ?? d?.data?.price ?? d?.value ?? d?.rate;
       const err = d?.error || d?.message || (!item.ok ? "upstream_error" : undefined);
@@ -151,54 +148,80 @@ async function load(kind: "initial" | "refresh" = "refresh") {
 
     if (kind !== "initial" && mapped.length === 0) return;
 
-    // ✅ construye nextRows SIN setState anidado
-    const prevMap = new Map(rows.map((r) => [r.symbol, r]));
+    // ✅ 1) construye nextRows usando el prev REAL
+setRows((prev) => {
+  const prevMap = new Map(prev.map((r) => [r.symbol, r]));
 
-    const nextRows: Row[] = mapped.map((cur) => {
-      const old = prevMap.get(cur.symbol);
-      const price = typeof cur.price === "number" ? cur.price : old?.price;
-      return { ...old, ...cur, price };
-    });
+  const nextRows: PriceRow[] = mapped.map((cur) => {
+    const old = prevMap.get(cur.symbol);
 
-    // ✅ flashes: fuera de setRows
-    const newFlashes: Record<string, "up" | "down"> = {};
+    const newPrice =
+      typeof cur.price === "number" ? cur.price : old?.price;
 
-    for (const cur of nextRows) {
-      if (typeof cur.price !== "number") continue;
+    const oldPrice =
+      typeof old?.price === "number" ? old.price : undefined;
 
-      const last = lastPriceRef.current[cur.symbol];
-      if (typeof last === "number") {
-        if (cur.price > last) newFlashes[cur.symbol] = "up";
-        else if (cur.price < last) newFlashes[cur.symbol] = "down";
-      }
-      lastPriceRef.current[cur.symbol] = cur.price;
+    // ✅ prevPrice = el precio anterior
+    const prevPrice =
+      typeof oldPrice === "number" &&
+      typeof newPrice === "number" &&
+      newPrice !== oldPrice
+        ? oldPrice
+        : old?.prevPrice;
+
+    const pct =
+      typeof newPrice === "number" &&
+      typeof prevPrice === "number" &&
+      prevPrice !== 0
+        ? ((newPrice - prevPrice) / prevPrice) * 100
+        : old?.pct;
+
+    return {
+      ...old,
+      ...cur,
+      price: newPrice,
+      prevPrice,
+      pct,
+    };
+  });
+
+  // ✅ flashes aquí sí pueden vivir (usan nextRows y refs)
+  const newFlashes: Record<string, "up" | "down"> = {};
+  for (const r of nextRows) {
+    if (typeof r.price !== "number") continue;
+    const last = lastPriceRef.current[r.symbol];
+    if (typeof last === "number") {
+      if (r.price > last) newFlashes[r.symbol] = "up";
+      else if (r.price < last) newFlashes[r.symbol] = "down";
     }
+    lastPriceRef.current[r.symbol] = r.price;
+  }
 
-    setRows(nextRows);
-
-    if (Object.keys(newFlashes).length) {
-      setFlashRow((prev) => ({ ...prev, ...newFlashes }));
-
-      for (const sym of Object.keys(newFlashes)) {
-        if (flashTimersRef.current[sym]) clearTimeout(flashTimersRef.current[sym]);
-
-        flashTimersRef.current[sym] = setTimeout(() => {
-          setFlashRow((m) => {
-            const copy = { ...m };
-            delete copy[sym];
-            return copy;
-          });
-        }, 450);
-      }
+  if (Object.keys(newFlashes).length) {
+    setFlashRow((prevFlash) => ({ ...prevFlash, ...newFlashes }));
+    for (const sym of Object.keys(newFlashes)) {
+      if (flashTimersRef.current[sym]) clearTimeout(flashTimersRef.current[sym]);
+      flashTimersRef.current[sym] = setTimeout(() => {
+        setFlashRow((m) => {
+          const copy = { ...m };
+          delete copy[sym];
+          return copy;
+        });
+      }, 450);
     }
-    setLastUpdated(new Date().toISOString());
+  }
 
+  // ✅ notifica al padre con el nextRows correcto
+  queueMicrotask(() => {
+    if (seq !== reqSeq.current) return;
+    onRows?.(nextRows);
+    onHealth?.({ ok: true, lastOkAt: new Date().toISOString() });
+  });
+
+  setLastUpdated(new Date().toISOString());
+  return nextRows;
+});
     // ✅ notifica al padre SIN “setState during render”
-    queueMicrotask(() => {
-      if (seq !== reqSeq.current) return;
-      onRows?.(nextRows);
-      onHealth?.({ ok: true, lastOkAt: new Date().toISOString() });
-    });
   } catch (e: any) {
     if (seq !== reqSeq.current) return;
     const msg = e?.message ?? "Error cargando precios";
@@ -230,9 +253,6 @@ async function load(kind: "initial" | "refresh" = "refresh") {
 
     updateMeta();
 
-    window.addEventListener("cryptolink:fiat", updateMeta as any);
-    window.addEventListener("cryptolink:symbols", updateMeta as any);
-
     const id = setInterval(() => load("refresh"), 5000);
 
     window.addEventListener("cryptolink:fiat", updateMeta as any);
@@ -253,13 +273,6 @@ async function load(kind: "initial" | "refresh" = "refresh") {
     };
   }, []);
   
-   useEffect(() => {
-      if (!auto) return;
-
-      const id = setInterval(() => load("refresh"), 5000);
-      return () => clearInterval(id);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto]);
 
   function CopyIcon({ show }: { show: boolean }) {
     return (
@@ -467,6 +480,16 @@ async function load(kind: "initial" | "refresh" = "refresh") {
                   ? "rgba(255,159,67,0.07)"
                   : zebra;
 
+                const pct =
+                  typeof r.price === "number" &&
+                  typeof r.prevPrice === "number" &&
+                  r.prevPrice !== 0
+                    ? ((r.price - r.prevPrice) / r.prevPrice) * 100
+                    : null;
+
+                const pctTone =
+                pct == null ? "rgba(255,255,255,0.55)" : pct > 0 ? UI.green : pct < 0 ? UI.red : "rgba(255,255,255,0.55)";
+
                return (
                 <tr
                   key={r.symbol}
@@ -491,14 +514,9 @@ async function load(kind: "initial" | "refresh" = "refresh") {
                       style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
                       onClick={() => copySymbol(r.symbol)}
                     >
-                      <span
-                        style={{
-                          textShadow: hover === r.symbol ? "0 0 10px rgba(255,159,67,0.18)" : "none",
-                        }}
-                      >
-                        {r.symbol}
+                      <span  style={{textShadow: hover === r.symbol ? "0 0 10px rgba(255,159,67,0.18)" : "none"}}>
+                        <SymbolCell symbol={r.symbol} />
                       </span>
-
                       {hover === r.symbol && (
                         <span
                           style={{
@@ -529,8 +547,20 @@ async function load(kind: "initial" | "refresh" = "refresh") {
                     </div>
                   </td>
 
-                  <td style={{ padding: "12px 8px", fontWeight: 900, color: UI.orangeSoft }}>
-                    {typeof r.price === "number" ? formatMoney(r.price, r.fiat) : "—"}
+                  <td style={{ padding: "12px 8px" }}>
+                    <div style={{ fontWeight: 950, color: UI.orangeSoft }}>
+                      {typeof r.price === "number"
+                      ? new Intl.NumberFormat("en-US", {
+                        style: "currency",
+                        currency: r.fiat || "USD",
+                        maximumFractionDigits: r.fiat === "JPY" ? 0 : 2,
+                      }).format(r.price)
+                    : "—"}
+                    </div>
+
+                    <span style={{ color: pct == null ? "rgba(255,255,255,0.6)" : pct > 0 ? UI.green : pct < 0 ? UI.red : "rgba(255,255,255,0.6)" }}>
+                      {pct == null ? "—" : `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`}
+                    </span>
                   </td>
 
                   <td style={{ padding: "12px 8px", opacity: 0.85, fontSize: 12 }}>

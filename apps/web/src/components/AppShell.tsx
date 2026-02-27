@@ -84,7 +84,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
           <div>
             <div style={{ fontSize: 16, fontWeight: 950, letterSpacing: 0.2 }}>
-              CryptoLink <span style={{ color: UI.orange }}>V2</span>
+              <span style={{ color: UI.orange }}>CryptoLink </span>V2
             </div>
             <div style={{ marginTop: 2, fontSize: 12, opacity: 0.7 }}>Dashboard</div>
           </div>

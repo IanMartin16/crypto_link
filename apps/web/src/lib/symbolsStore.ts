@@ -13,10 +13,18 @@ export function getSymbols(): string[] {
 }
 
 export function setSymbols(symbols: string[]) {
-  const clean = symbols
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean)
-    .slice(0, 20); // límite razonable
-  window.localStorage.setItem(KEY, JSON.stringify(clean));
-  window.dispatchEvent(new CustomEvent("cryptolink:symbols"));
+  const clean = Array.from(
+    new Set((symbols || []).map((s) => String(s).toUpperCase().trim()).filter(Boolean))
+  ).slice(0, 20);
+
+  try {
+    localStorage.setItem(KEY, JSON.stringify(clean));
+  } catch {}
+
+  // ✅ defer event (evita setState during render en listeners)
+  queueMicrotask(() => {
+    try {
+      window.dispatchEvent(new CustomEvent("cryptolink:symbols"));
+    } catch {}
+  });
 }

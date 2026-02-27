@@ -7,7 +7,7 @@ import { formatMoney, shortTime, shortTs } from "@/lib/format";
 
 function formatPrice(value: number, fiat: string) {
   try {
-    return new formatMoney("en-US", {
+    return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: fiat,
       maximumFractionDigits: fiat === "JPY" ? 0 : 2,

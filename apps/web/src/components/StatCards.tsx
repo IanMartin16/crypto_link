@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import HeroPriceCard from "@/components/HeroPriceCard";
+import type { PriceRow } from "@/lib/types";
 
 type Row = {
   symbol: string;
@@ -11,7 +12,7 @@ type Row = {
   ok?: boolean;
 };
 
-export default function StatCards({ rows }: { rows: Row[] }) {
+export default function StatCards({ rows }: { rows: PriceRow[] }) {
   const map = useMemo(() => new Map(rows.map((r) => [r.symbol, r])), [rows]);
 
   const btc = map.get("BTC");

@@ -4,45 +4,57 @@ import React, { useMemo } from "react";
 
 export default function Sparkline({
   values,
-  w = 90,
-  h = 24,
-  stroke = "rgba(255,159,67,0.85)",
-  fill = "rgba(255,159,67,0.10)",
+  w = 88,
+  h = 22,
+  stroke,
+  fill,
 }: {
   values: number[];
   w?: number;
   h?: number;
-  stroke?: string;
-  fill?: string;
+  stroke: string;
+  fill: string;
 }) {
-  const pts = useMemo(() => {
-    if (!values?.length) return "";
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const span = Math.max(1e-9, max - min);
+  if (!values || values.length < 2) {
+    return (
+      <svg width={w} height={h}>
+        <line
+          x1={0}
+          y1={h / 2}
+          x2={w}
+          y2={h / 2}
+          stroke="rgba(255,255,255,0.15)"
+          strokeWidth={1}
+        />
+      </svg>
+    );
+  }
 
-    return values
-      .map((v, i) => {
-        const x = (i / Math.max(1, values.length - 1)) * (w - 2) + 1;
-        const y = h - 1 - ((v - min) / span) * (h - 2);
-        return `${x.toFixed(2)},${y.toFixed(2)}`;
-      })
-      .join(" ");
-  }, [values, w, h]);
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const range = max - min || 1;
 
-  const area = useMemo(() => {
-    if (!pts) return "";
-    return `1,${h - 1} ${pts} ${w - 1},${h - 1}`;
-  }, [pts, w, h]);
+  const points = values.map((v, i) => {
+    const x = (i / (values.length - 1)) * w;
+    const y = h - ((v - min) / range) * h;
+    return `${x},${y}`;
+  });
+
+  const area = `M0,${h} L${points.join(" L")} L${w},${h} Z`;
 
   return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ display: "block" }}>
-      {pts && (
-        <>
-          <polyline points={area} fill={fill} stroke="none" />
-          <polyline points={pts} fill="none" stroke={stroke} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" />
-        </>
-      )}
+    <svg width={w} height={h}>
+      <path d={area} fill={fill} />
+      <polyline
+        points={points.join(" ")}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={1.6}
+        style={{
+          filter: `drop-shadow(0 0 6px ${stroke}55)`,
+          transition: "all 220ms ease",
+        }}
+      />
     </svg>
   );
 }

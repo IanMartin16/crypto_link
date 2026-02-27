@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { UI } from "@/lib/ui";
 import { getSymbols } from "@/lib/symbolsStore";
 import { Skeleton } from "@/components/Skeleton";
@@ -9,6 +9,9 @@ import Sparkline from "@/components/Sparkline";
 import { shortTs, shortTime } from "@/lib/format";
 import Chip from "@/components/ui/Chip";
 import type { Health } from "@/lib/health";
+import { HEALTH_OK } from "@/lib/health"
+import SymbolCell from "@/components/SymbolCell";
+import { getSymbolName } from "@/lib/symbolMeta";
 
 
 type TrendItem = {
@@ -21,6 +24,8 @@ type TrendItem = {
 type TrendsResponse = {
   ts: string;
   data: TrendItem[];
+  items: TrendItem[];
+  updatedAt: string;
 };
 
 function RefreshDot({ on }: { on: boolean }) {
@@ -43,9 +48,10 @@ function RefreshDot({ on }: { on: boolean }) {
 async function fetchTrends(symbols: string[]) {
   const qs = encodeURIComponent(symbols.join(","));
   const res = await fetch(`/api/social/trends?symbols=${qs}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Social_link HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`social_link HTTP ${res.status}`);
   return (await res.json()) as TrendsResponse;
 }
+
 
 function trendColor(trend: TrendItem["trend"]) {
   return trend === "up" ? UI.green : trend === "down" ? UI.red : "#bbb";
@@ -103,10 +109,86 @@ function TrendBadge({ trend }: { trend: TrendItem["trend"] }) {
   );
 }
 
+type MarketStats = {
+  total: number;
+  up: number;
+  down: number;
+  flat: number;
+
+  breadthUpPct: number;     // % de símbolos en UP
+  breadthDownPct: number;   // % en DOWN
+  mood: "BULLISH" | "BEARISH" | "NEUTRAL";
+
+  avgScore: number;
+  confidence: number;       // 0..100 (derivado de score y consenso)
+  volatility: "LOW" | "MED" | "HIGH";
+
+  topSymbol?: string;
+};
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function computeMarketStats(items: TrendItem[]): MarketStats {
+  const total = items.length;
+  const up = items.filter((t) => t.trend === "up").length;
+  const down = items.filter((t) => t.trend === "down").length;
+  const flat = items.filter((t) => t.trend === "flat").length;
+
+  const breadthUpPct = total ? Math.round((up / total) * 100) : 0;
+  const breadthDownPct = total ? Math.round((down / total) * 100) : 0;
+
+  // Mood simple por mayoría
+  const mood: MarketStats["mood"] =
+    up > down ? "BULLISH" : down > up ? "BEARISH" : "NEUTRAL";
+
+  // Score promedio (puede ser % o cualquier escala)
+const scores = items.map((t) => (typeof t.score === "number" ? t.score : 0));
+const avgScore = total ? scores.reduce((a, b) => a + b, 0) / total : 0;
+
+// Consenso 0..1
+const consensus = total ? Math.abs(up - down) / total : 0;
+
+// ✅ Normalización robusta
+// Si score está en % (ej 0.34, -0.07, 2.5), lo pasamos a 0..1 con cap
+const SCORE_CAP = 5; // 5% = "fuerte"
+const scoreAbs = Math.abs(avgScore);
+const scoreNorm = clamp(scoreAbs / SCORE_CAP, 0, 1); // 0..1
+
+// ✅ Confidence: mezcla magnitud + consenso
+const confidence = Math.round(clamp(scoreNorm * 60 + consensus * 40, 0, 100));
+
+  // Volatilidad “proxy” (sin precios): si hay mucha mezcla UP/DOWN/FLAT => más “volátil”
+  // Si casi todos están del mismo lado => menos “volátil”
+  const mix = 1 - consensus; // 0..1
+  const flatPct = total ? flat / total : 0;
+
+  let volatility: MarketStats["volatility"];
+  if (flatPct > 0.75) volatility = "LOW";
+  else volatility = mix > 0.66 ? "HIGH" : mix > 0.33 ? "MED" : "LOW";
+
+  // Top symbol por score
+  const top = [...items].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]?.symbol;
+
+  return {
+    total, up, down, flat,
+    breadthUpPct,
+    breadthDownPct,
+    mood,
+    avgScore: Number.isFinite(avgScore) ? avgScore : 0,
+    confidence,
+    volatility,
+    topSymbol: top,
+  };
+}
+
 export default function TrendsTable({
   onHealth,
+  onItems,
 }: {
-  onHealth?: (h: Health) => void;
+  onHealth?: (h:{ ok: boolean; lastOkAt?: string; lastErr?: string }) => void;
+  onItems?: (items: TrendItem[]) => void;
 }) {
   const [items, setItems] = useState<TrendItem[]>([]);
   const [ts, setTs] = useState<string>("");
@@ -123,7 +205,6 @@ export default function TrendsTable({
   const [toast, setToast] = useState<{ msg: string; tone?: "ok" | "warn" | "err" } | null>(null);
   const [hist, setHist] = useState<Record<string, number[]>>({});
   const [lastUpdated, setLastUpdated] = useState<string>("");
-  
 
   useEffect(() => {
     const loadSymbols = () => {
@@ -137,25 +218,38 @@ export default function TrendsTable({
   }, []);
 
   async function load(kind: "initial" | "refresh" = "refresh") {
-    const seq = ++reqSeq.current;
+  const seq = ++reqSeq.current;
 
-    try {
-      setError(null);
-      if (kind === "initial") setLoading(true);
-      else setRefreshing(true);
+  try {
+    const list = getSymbols();
+    if (!list.length) return;
 
-      const list = symbols?.length ? symbols : getSymbols();
-      if (!list?.length) return;
+    const r = await fetchTrends(list);
+    if (seq !== reqSeq.current) return;
 
-      const r = await fetchTrends(list);
-      if (seq !== reqSeq.current) return;
+    // ✅ normaliza timestamp (tu API devuelve updatedAt)
+    const ts = (r as any).updatedAt ?? (r as any).ts ?? new Date().toISOString();
 
-      setTs(r.ts ?? "");
-      const sorted = [...(r.data ?? [])].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-      setItems(sorted);
-      setLastUpdated(new Date().toISOString());
+    // ✅ items vienen en r.items
+    const raw = (r as any).items ?? [];
 
-      setHist((prev) => {
+    // ✅ asegúrate que cada item traiga ts (para "Updated" y tabla)
+    const nextItems: TrendItem[] = raw.map((t: any) => ({
+      ...t,
+      ts: t.ts ?? ts,
+    }));
+
+    // ✅ orden opcional (si tu UI quiere top primero)
+    nextItems.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+    setTs(ts);
+    setItems(nextItems);
+    setLastUpdated(ts);
+
+    const sorted = [...nextItems].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    
+
+     setHist((prev) => {
         const next = { ...prev };
         for (const it of sorted) {
           const arr = next[it.symbol] ? [...next[it.symbol]] : [];
@@ -166,28 +260,41 @@ export default function TrendsTable({
         return next;
       });
 
-
-      queueMicrotask(() => {
-        if (seq !== reqSeq.current) return;
-        onHealth?.({ ok: true, lastOkAt: new Date().toISOString() });
-      });
-    } catch (e: any) {
+    queueMicrotask(() => {
       if (seq !== reqSeq.current) return;
-      const msg = e?.message ?? "Error trends";
-      setError(msg);
+      onItems?.(nextItems);
+      onHealth?.({ ok: true, lastOkAt: ts });
+    });
+  } catch (e: any) {
+    if (seq !== reqSeq.current) return;
+    const msg = e?.message ?? "Error cargando trends";
 
-      queueMicrotask(() => {
-        if (seq !== reqSeq.current) return;
-        onHealth?.({ ok: false, lastErr: msg });
-      });
-    } finally {
+    queueMicrotask(() => {
       if (seq !== reqSeq.current) return;
-      setLoading(false);
-      setRefreshing(false);
-    }
+      onHealth?.({ ok: false, lastErr: msg });
+    });
   }
+}
 
-  // 👇 si quieres evitar doble intervalo, deja SOLO este (auto controla)
+useEffect(() => {
+  load("initial");
+  if (!auto) return;
+
+  // ✅ polling 10s
+  const id = setInterval(() => load("refresh"), 10000);
+
+  // ✅ refresca si cambian símbolos
+  const onSymbols = () => setTimeout(() => load("refresh"), 0);
+  window.addEventListener("cryptolink:symbols" as any, onSymbols);
+
+  return () => {
+    clearInterval(id);
+    window.removeEventListener("cryptolink:symbols" as any, onSymbols);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
+  // 👇 intervalo de refresh
   useEffect(() => {
     load("initial");
     if (!auto) return;
@@ -195,7 +302,7 @@ export default function TrendsTable({
     const id = setInterval(() => load("refresh"), 10000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto]);
+  }, [auto, symbols.length]);
 
   useEffect(() => {
       setItems((prev) => {
@@ -236,6 +343,34 @@ export default function TrendsTable({
         </svg>
       </span>
     );
+  }
+
+  function slope(values: number[]) {
+    if (!values || values.length < 2) return 0;
+    const a = values[0];
+    const b = values[values.length - 1];
+    if (a === 0) return 0;
+    return (b - a) / Math.abs(a); // porcentaje relativo
+  }
+
+  function momentumLabel(score?: number, s?: number) {
+    const sc = typeof score === "number" ? score : 0;
+    const sl = typeof s === "number" ? s : 0;
+
+    // tuning suave (ajustable)
+    if (sc >= 6 && sl > 0.01) return "STRONG";
+    if (sc >= 3 && sl > 0.005) return "GROWING";
+    if (sc <= -6 && sl < -0.01) return "DUMPING";
+    if (sc <= -3 && sl < -0.005) return "WEAK";
+    return "NEUTRAL";
+  }
+
+  function momentumTone(m: string) {
+    if (m === "STRONG") return { c: UI.green, bg: "rgba(46,229,157,0.10)", b: "rgba(46,229,157,0.25)" };
+    if (m === "GROWING") return { c: "rgba(46,229,157,0.85)", bg: "rgba(46,229,157,0.06)", b: "rgba(46,229,157,0.18)" };
+    if (m === "DUMPING") return { c: UI.red, bg: "rgba(255,107,107,0.10)", b: "rgba(255,107,107,0.25)" };
+    if (m === "WEAK") return { c: "rgba(255,107,107,0.85)", bg: "rgba(255,107,107,0.06)", b: "rgba(255,107,107,0.18)" };
+    return { c: "rgba(255,255,255,0.75)", bg: "rgba(255,255,255,0.05)", b: UI.border };
   }
 
   const showSkeleton = loading && items.length === 0;
@@ -329,6 +464,42 @@ export default function TrendsTable({
 
   const viewItems = filter === "all" ? items : items.filter((t) => t.trend === filter);
 
+  const stats = useMemo(() => computeMarketStats(items), [items]);
+
+  const moodBase = items.length ? items : [];
+
+  const upCount = moodBase.filter((t) => t.trend === "up").length;
+  const downCount = moodBase.filter((t) => t.trend === "down").length;
+  const flatCount = moodBase.filter((t) => t.trend === "flat").length;
+  const total = moodBase.length || 1;
+
+  const upPct = Math.round((upCount / total) * 100);
+  const downPct = Math.round((downCount / total) * 100);
+
+  // fuerza neta (simple): promedio signed score  
+  const signed = moodBase.map((t) => {
+    const s = typeof t.score === "number" ? t.score : 0;
+    return t.trend === "up" ? s : t.trend === "down" ? -s : 0;
+  });
+  const strength = signed.reduce((a, b) => a + b, 0) / (moodBase.length || 1);
+
+   // confidence 0..100 (basado en magnitud)
+  const confidence = Math.min(100, Math.round(Math.abs(strength) * 12)); // tuning ligero
+
+  const mood =
+    strength > 0.15 ? "BULLISH" : strength < -0.15 ? "BEARISH" : "NEUTRAL";
+
+  const moodTone =
+    mood === "BULLISH" ? UI.green : mood === "BEARISH" ? UI.red : "rgba(255,255,255,0.75)";
+
+  const moodBg =
+   mood === "BULLISH"
+      ? "rgba(46,229,157,0.10)"
+      : mood === "BEARISH"
+      ? "rgba(255,107,107,0.10)"
+      : "rgba(255,255,255,0.05)";
+
+
   useEffect(() => {
     const f = window.localStorage.getItem("cl_trends_filter") as any;
     if (f === "all" || f === "up" || f === "down") setFilter(f);
@@ -345,6 +516,16 @@ export default function TrendsTable({
     window.localStorage.setItem("cl_trends_auto", auto ? "1" : "0");
   }, [auto]);
 
+  function clamp01(x: number) {
+    return Math.max(0, Math.min(1, x));
+  }
+
+  // score -> intensidad 0..1 (tuning: 0..10 aprox)
+  function intensityFromScore(score?: number) {
+    if (typeof score !== "number") return 0;
+    return clamp01(Math.abs(score) / 10);
+  }
+
   return (
     <section
       style={{
@@ -352,7 +533,12 @@ export default function TrendsTable({
         padding: UI.padLg,
         border: `1px solid ${UI.border}`,
         borderRadius: UI.radiusLg,
-        background: UI.panel,
+        background:
+          stats.mood === "BULLISH"
+            ? "linear-gradient(180deg, rgba(46,229,157,0.06), rgba(255,255,255,0.02))"
+            : stats.mood === "BEARISH"
+            ? "linear-gradient(180deg, rgba(255,107,107,0.06), rgba(255,255,255,0.02))"
+            : UI.panel,
         position: "relative",
         overflow: "hidden",
         minHeight: 300,
@@ -376,75 +562,161 @@ export default function TrendsTable({
         />
       )}
 
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
-        <div style={{ minWidth: 0 }}>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 900, letterSpacing: 0.3}}>
-            Trends <span style={{ color: UI.orange }}>(Social_link)</span>
-          </h2>
-          <div style={{ marginTop: 6, fontSize: 11, opacity: 0.65 }}>
-            Movers · refresh: 10s · filter: {filter.toUpperCase()}
-          </div>
-        </div>
-
-        <div
-          style={{
-            display: "flex",
-            gap: 8,
-            flexWrap: "wrap",
-            justifyContent: "flex-end",
-            maxWidth: "55%",
-            minWidth: 0,
-          }}
-        >
-          <Chip>
-            Auto:{" "}
-            <button
-              onClick={() => setAuto((v) => !v)}
+      {/* HEADER pro: Market Snapshot */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 14,
+          alignItems: "flex-start",
+        }}
+      >
+        {/* LEFT */}
+          <div style={{ minWidth: 0 }}>
+            <h2 style={{ margin: 0 }}>
+              Trends <span style={{ color: UI.orange }}>(Social_link)</span>
+            </h2>
+            <div
               style={{
-                all: "unset",
-                cursor: "pointer",
-                fontWeight: 950,
-                color: auto ? UI.green : UI.red,
-                marginLeft: 6,
+                marginTop: 10,
+                padding: "8px 12px",
+                borderRadius: 12,
+                fontSize: 12,
+                opacity: 0.85,
+                border: `1px solid ${UI.border}`,
+                background: "rgba(255,255,255,0.02)",
               }}
             >
-              {auto ? "ON" : "OFF"}
-            </button>
-          </Chip>
+              {stats.mood === "BULLISH" && (
+                <>📈 Social sentiment aligned to upside momentum.</>
+              )}
 
-          <Chip>
-            Symbols: <span style={{ color: UI.orangeSoft }}>{chipCount || 0}</span>
-          </Chip>
-          <Chip>
-            ts: <span style={{ color: UI.orangeSoft }}>{tsShort}</span>
-          </Chip>
-          <Chip>
-            Updated:{" "}
-            <span style={{ color: UI.orangeSoft }}>
-              {lastUpdated
-                ? new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-                : "--"}
-            </span>
-          </Chip>
-          <Chip>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <RefreshDot on={auto && refreshing } />
-              {refreshing || loading ? "updating" : "idle"}
-            </span>
-          </Chip>
+              {stats.mood === "BEARISH" && (
+                <>📉 Social sentiment showing downside pressure.</>
+              )}
 
-          {/* filtros (botones) */}
-          <ChipBtn active={filter === "all"} tone="neutral" onClick={() => setFilter("all")} title="Mostrar todos">
-            ALL
-          </ChipBtn>
-          <ChipBtn active={filter === "up"} tone="up" onClick={() => setFilter("up")} title="Solo UP">
-            UP
-          </ChipBtn>
-          <ChipBtn active={filter === "down"} tone="down" onClick={() => setFilter("down")} title="Solo DOWN">
-            DOWN
-          </ChipBtn>
+              {stats.mood === "NEUTRAL" && (
+                <>⚖️ Market sentiment balanced. No clear dominance.</>
+              )}
+            </div>
+
+            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.78 }}>
+              Movers · refresh: <span style={{ color: UI.orangeSoft, fontWeight: 900 }}>10s</span>{" "}
+              · filter: <span style={{ color: UI.orangeSoft, fontWeight: 900 }}>{filter.toUpperCase()}</span>
+            </div>
+          </div>
+
+          {/* RIGHT: Snapshot */}
+            <div style={{ minWidth: 0, display: "grid", gap: 8, justifyItems: "end" }}>
+              {/* Snapshot card */}
+              <div
+                style={{
+                  border: `1px solid ${UI.border}`,
+                  background: "rgba(255,255,255,0.03)",
+                  borderRadius: 14,
+                  padding: "10px 12px",
+                  boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+                  maxWidth: 520,
+                }}
+              >
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
+                  {/* Mood */}
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>Mood:</span>
+                  <span
+                    style={{
+                      padding: "3px 10px",
+                      borderRadius: 999,
+                      fontSize: 12,
+                      fontWeight: 950,
+                      border: `1px solid ${stats.mood === "BULLISH" ? UI.green : stats.mood === "BEARISH" ? UI.red : UI.border}`,
+                      background:
+                        stats.mood === "BULLISH"
+                          ? "rgba(46,229,157,0.10)"
+                          : stats.mood === "BEARISH"
+                          ? "rgba(255,107,107,0.10)"
+                          : "rgba(255,255,255,0.06)",
+                      color: stats.mood === "BULLISH" ? UI.green : stats.mood === "BEARISH" ? UI.red : UI.orangeSoft,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {stats.mood}
+                  </span>
+
+                  {/* Up/Down */}
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>Up/Down:</span>
+                  <span style={{ fontSize: 12, fontWeight: 950, color: UI.orangeSoft, whiteSpace: "nowrap" }}>
+                    {stats.breadthUpPct}% / {stats.breadthDownPct}%
+                  </span>
+
+                  {/* Confidence */}
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>Confidence:</span>
+                  <span style={{ fontSize: 12, fontWeight: 950, color: UI.orangeSoft }}>
+                    {stats.confidence}%
+                  </span>
+
+                  {/* Vol */}
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>Vol:</span>
+                  <span style={{ fontSize: 12, fontWeight: 950, color: UI.orangeSoft }}>
+                    {stats.volatility}
+                  </span>
+                </div>
+              </div>
+
+              {/* Controls row */}
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  justifyContent: "flex-end",
+                  alignItems: "center",
+                  maxWidth: 520,
+                }}
+              >
+                {/* Auto */}
+                <Chip>
+                  Auto:{" "}
+                  <button
+                    onClick={() => setAuto((v) => !v)}
+                    style={{
+                      all: "unset",
+                      cursor: "pointer",
+                      fontWeight: 950,
+                      color: auto ? UI.green : UI.red,
+                      marginLeft: 6,
+                    }}
+                  >
+                    {auto ? "ON" : "OFF"}
+                  </button>
+                </Chip>
+
+                {/* Updated + ts */}
+                <Chip>
+                  Updated: <span style={{ color: UI.orangeSoft }}>{shortTime(ts)}</span>
+                </Chip>
+                <Chip>
+                  ts: <span style={{ color: UI.orangeSoft }}>{tsShort}</span>
+                </Chip>
+
+                {/* Filter buttons */}
+                <Chip>
+                <ChipBtn active={filter === "all"} tone="neutral" onClick={() => setFilter("all")} title="Solo ALL">
+                  ALL
+                </ChipBtn>
+                </Chip>
+                <Chip>
+                <ChipBtn active={filter === "up"} tone="up" onClick={() => setFilter("up")} title="Solo UP">
+                  UP
+                </ChipBtn>
+              </Chip>
+              <Chip>
+                <ChipBtn active={filter === "down"} tone="down" onClick={() => setFilter("down")} title="Solo DOWN">
+                  DOWN
+                </ChipBtn>
+              </Chip>
+            </div>
+          </div>
         </div>
-      </div>
 
       {error && (
         <div style={{ marginTop: 10, color: UI.red, fontSize: 12 }}>
@@ -457,6 +729,7 @@ export default function TrendsTable({
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: `1px solid ${UI.border}` }}>
+                <th style={{ padding: "10px 8px", fontSize: 12, opacity: 0.75, fontWeight: 800 }}>#</th>
                 <th style={{ padding: "10px 8px", fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Symbol</th>
                 <th style={{ padding: "10px 8px", fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Trend</th>
                 <th style={{ padding: "10px 8px", fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Score</th>
@@ -488,26 +761,55 @@ export default function TrendsTable({
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: `1px solid ${UI.border}`, position: "sticky", top: 0, background: UI.panel, zIndex: 1, }}>
+                <th style={{ padding: "10px 8px", fontSize: 12, opacity: 0.75, fontWeight: 800 }}>#</th>
                 <th style={{ padding: "10px 8px", fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Symbol</th>
                 <th style={{ padding: "10px 8px", fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Trend</th>
                 <th style={{ padding: "10px 8px", fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Score</th>
                 <th style={{ padding: "10px 8px", fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Reason</th>
+                <th style={{ padding: "10px 8px", fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Momentum</th>
               </tr>
             </thead>
             <tbody>
               {viewItems.map((t, idx) => {
+                const rank = idx + 1;
+                const c = trendColor(t.trend);
                 const isHover = hover === t.symbol;
-                const zebra = idx % 2 === 0 ? "rgba(255,255,255,0.02)" : "transparent";
-                const bg = isHover ? "rgba(255,159,67,0.06)" : trendTint(t.trend);
+                const a = intensityFromScore(t.score);
+                const isTop = rank <= 3;
+                const fullName = getSymbolName(t.symbol);
+
+                const rankStyle = isTop
+                  ? {
+                      background: "rgba(255,159,67,0.12)",
+                      border: `1px solid rgba(255,159,67,0.22)`,
+                      boxShadow: "0 0 18px rgba(255,159,67,0.10)",
+                      color: UI.orangeSoft,
+                    }
+                  : {
+                      background: "rgba(255,255,255,0.03)",
+                      border: `1px solid ${UI.border}`,
+                      color: "rgba(255,255,255,0.70)",
+                    };
                 
-                const k = intensity(t.score ?? 0);
-                const c = trendColor(t.trend); 
-                const heat =
+                const bg =
                   t.trend === "up"
-                    ? `rgba(46,229,157,${0.08 + k * 0.18})`
+                    ? `rgba(46,229,157,${0.04 + a * 0.12})`
                     : t.trend === "down"
-                    ? `rgba(255,107,107,${0.08 + k * 0.18})`
-                    : `rgba(255,255,255,${0.04 + k * 0.10})`;
+                    ? `rgba(255,107,107,${0.04 + a * 0.12})`
+                    : `rgba(255,255,255,${0.02 + a * 0.06})`;
+
+                     // bar lateral (heat bar)
+                const bar =
+                  t.trend === "up"
+                    ? `rgba(46,229,157,${0.25 + a * 0.55})`
+                    : t.trend === "down"
+                    ? `rgba(255,107,107,${0.25 + a * 0.55})`
+                    : `rgba(255,255,255,${0.18 + a * 0.25})`;   
+                    
+                const h = hist[t.symbol] ?? [];
+                const sl = slope(h);
+                const mom = momentumLabel(t.score, sl);
+                const mt = momentumTone(mom);
 
                 return (
                   <tr
@@ -516,11 +818,29 @@ export default function TrendsTable({
                     onMouseLeave={() => setHover(null)}
                     style={{
                       borderBottom: `1px solid ${UI.borderSoft}`,
-                      background: bg,
-                      transition: "background 140ms ease, transform 140ms ease",
-                      transform: isHover ? "translateY(-1px)" : "translateY(0)",
+                      background: isHover ? "rgba(255,159,67,0.06)" : bg,
+                      transition: "background 120ms ease",
                     }}
                   >
+                    {/* # */}
+                    <td style={{ padding: "12px 8px", position: "relative" }}>
+                      <span
+                        style={{
+                          display: "inline-grid",
+                          placeItems: "center",
+                          width: 28,
+                          height: 22,
+                          borderRadius: 999,
+                          fontWeight: 950,
+                          fontSize: 12,
+                          ...rankStyle,
+                        }}
+                        title={isTop ? "Top mover" : "Rank"}
+                      >
+                        {rank}
+                      </span>
+                    </td>
+
                     <td style={{ padding: "12px 8px", fontWeight: 950 }}>
                       <button
                         onClick={async () => {
@@ -530,82 +850,74 @@ export default function TrendsTable({
                           } catch {
                             setToast({ msg: "No pude copiar (permiso del navegador).", tone: "err" });
                           }
-                         }}
-                          style={{ all: "unset", cursor: "pointer", fontWeight: 950 }}
+                        }}
+                        style={{
+                          all: "unset",
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 8,
+                          color: "#e6edf3",
+                        }}
                           title="Copiar símbolo"
+                      >
+                        <span
+                          style={{
+                            textShadow: isHover ? "0 0 10px rgba(255,159,67,0.18)" : "none",
+                          }}
                         >
-                          <span
-                            style={{
-                              textShadow: isHover ? "0 0 10px rgba(255,159,67,0.18)" : "none",
-                            }}
-                          >
-                          {t.symbol}
-                          <Sparkline
-                          values={hist[t.symbol] ?? []}
-                          w={88}
-                          h={22}
-                          stroke={c}
-                          fill={t.trend === "up"
-                            ? "rgba(46,229,157,0.10)"
-                            : t.trend === "down"
-                            ? "rgba(255,107,107,0.10)"
-                            : "rgba(255,255,255,0.08)"
-                          }
-                        />
+                          <SymbolCell symbol={t.symbol} />
                         </span>
-                        <span style={{ color: UI.orangeSoft}}>
+                        <div className="flex flex-col min-w-0">
+                          {fullName ? (
+                            <div className="hidden sm:block text-[13px] text-white/45 truncate">
+                              {fullName}
+                          </div>
+                          ) : null}
+                        </div>
+                        <span style={{ color: UI.orangeSoft }}>
                           <CopyIcon show={isHover} />
                         </span>
                       </button>
                     </td>
 
-                    {/* ✅ Trend: solo badge (sin duplicar texto UP/DOWN) */}
-                    <td style={{ padding: "12px 8px" }}>
-                      <TrendBadge trend={t.trend} />
-                      <div style={{ marginLeft: 2, opacity: 0.95 }}>
+                      {/* Trend (Badge + sparkline ) */}
+                      <td style={{ padding: "12px 8px" }}>
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+                          <TrendBadge trend={t.trend} />
+                          {/* aquí deja tu sparkline si ya está integrado */}
+                        </div>
+                      </td>
+
+                      <td style={{ marginLeft: 4 }}>
                         <Sparkline
                           values={hist[t.symbol] ?? []}
-                          w={88}
-                          h={22}
+                          w={82}
+                          h={20}
                           stroke={c}
-                          fill={t.trend === "up" ? "rgba(46,229,157,0.10)" : t.trend === "down" ? "rgba(255,107,107,0.10)" : "rgba(255,255,255,0.08)"}
-                        />
-                      </div>
-                    </td>
-
-                    {/* ✅ Score a 2 decimales, alineado derecha */}
-                    <td style={{ padding: "12px 8px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <div style={{ fontWeight: 900, minWidth: 56 }}>
+                          fill={
+                            t.trend === "up"
+                              ? "rgba(46,229,157,0.10)"
+                              : t.trend === "down"
+                              ? "rgba(255,107,107,0.10)"
+                              : "rgba(255,255,255,0.06)"
+                            }
+                          />
                         {typeof t.score === "number" ? t.score.toFixed(2) : "—"}
-                        { t.score }
-                        <Sparkline
-                        values={hist[t.symbol] ?? []}
-                        w={88}
-                        h={22}
-                        stroke={c}
-                        fill={t.trend === "up"
-                          ? "rgba(46,229,157,0.10)"
-                          : t.trend === "down"
-                          ? "rgba(255,107,107,0.10)"
-                          : "rgba(255,255,255,0.08)"
-                        }
-                      />
-                      </div>
-                    </div>
-                  </td>
-                    {/* ✅ Reason con ellipsis */}
+                      </td>
+                      {/* ✅ Reason con ellipsis */}
                     <td style={{ padding: "12px 8px", fontSize: 12, opacity: 0.85, maxWidth: 260 }}>
                       <span
                         style={{
                           display: "block",
+                          color: c,
                           overflow: "hidden",
                           whiteSpace: "nowrap",
                           textOverflow: "ellipsis",
                         }}
                         title={t.reason || ""}
                       >
-                        {t.reason || "—"}
+                        {t.reason }
                         <Sparkline
                           values={hist[t.symbol] ?? []}
                           w={88}
@@ -620,10 +932,32 @@ export default function TrendsTable({
                         />
                       </span>
                     </td>
-                  </tr>
-                );
+                      <td style={{ padding: "12px 8px" }}>
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 8,
+                            padding: "3px 10px",
+                            borderRadius: 999,
+                            border: `1px solid ${mt.b}`,
+                            background: mt.bg,
+                            color: mt.c,
+                            fontSize: 12,
+                            fontWeight: 950,
+                            whiteSpace: "nowrap",
+                          }}
+                          title={`slope ${(sl*100).toFixed(2)}%`}
+                        >
+                          {mom}
+                          <span style={{ opacity: 0.75, fontWeight: 900, color: mt.c }}>
+                            {sl === 0 ? "·" : sl > 0 ? "↗" : "↘"}
+                          </span>
+                        </span>
+                      </td>
+                    </tr>
+                  );
               })}
-
               {items.length === 0 && !error && (
                 <tr>
                   <td colSpan={4} style={{ padding: "12px 8px", opacity: 0.75 }}>
