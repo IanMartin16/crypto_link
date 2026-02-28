@@ -111,18 +111,18 @@ async function load(kind: "initial" | "refresh" = "refresh") {
     else setRefreshing(true);
 
     const apiKey = getApiKey();
-    if (!apiKey) {
-      setRows([]);
-      setError("Falta API Key (pégala arriba).");
-      return;
-    }
+    //if (!apiKey) {
+      //setRows([]);
+      //setError("Falta API Key (pégala arriba).");
+      //return;
+   // }
 
     const fiat = getFiat();
     const symbols = getSymbols();
 
     if (kind !== "initial" && (!symbols || symbols.length === 0)) return;
 
-    const res = await fetchPricesBatch(symbols, fiat, apiKey);
+    const res = await fetchPricesBatch(symbols, fiat, apiKey ?? "");
     if (seq !== reqSeq.current) return;
 
     const mapped: PriceRow[] = (res.data ?? []).map((item: any) => {

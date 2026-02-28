@@ -48,8 +48,14 @@ async function fetchOne(base: string, symbol: string, fiat: string, apiKey: stri
 
 export async function GET(req: NextRequest) {
   try {
-    const apiKey = req.headers.get("x-api-key") || "";
-    if (!apiKey) return NextResponse.json({ ok: false, error: "Missing x-api-key" }, { status: 401 });
+    const headerKey = req.headers.get("x-api-key") || "";
+    const apiKey = headerKey || process.env.CRYPTOLINK_DEMO_KEY || "";
+    if (!apiKey) 
+      return NextResponse.json(
+    { ok: false, error: "Missing x-api-key" }, { status: 401 
+
+    }
+  );
 
     const { searchParams } = new URL(req.url);
     const symbolsParam = searchParams.get("symbols") || "BTC,ETH";
