@@ -8,10 +8,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.util.UriComponentsBuilder;
+import io.swagger.v3.oas.annotations.Hidden;
 
 import java.util.Map;
 import java.util.UUID;
 
+@Hidden
 @RestController
 @RequestMapping("/v1/billing")
 public class BillingController {

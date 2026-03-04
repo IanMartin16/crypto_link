@@ -4,9 +4,11 @@ import com.evilink.crypto_link.persistence.FulfillmentRepository;
 import com.evilink.crypto_link.service.SmtpEmailService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import io.swagger.v3.oas.annotations.Hidden;
 
 import java.util.Map;
 
+@Hidden
 @RestController
 @RequestMapping("/v1/billing")
 public class BillingSupportController {

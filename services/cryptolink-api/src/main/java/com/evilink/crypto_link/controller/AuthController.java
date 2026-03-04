@@ -6,9 +6,11 @@ import com.evilink.crypto_link.security.SseTokenService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
+import io.swagger.v3.oas.annotations.Hidden;
 
 import java.util.Map;
 
+@Hidden
 @RestController
 public class AuthController {
 

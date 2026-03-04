@@ -35,7 +35,7 @@ public class MetaController {
         return Map.of(
                 "ok", true,
                 "name", "crypto_link",
-                "version", "v1",
+                "version", "v1.0.0",
                 "symbols", validator.allowedSymbols(),
                 "fiats", validator.allowedFiats(),
                 "endpoints", List.of(
