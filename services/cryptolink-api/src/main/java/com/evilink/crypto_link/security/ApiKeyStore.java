@@ -10,9 +10,9 @@ import java.util.Optional;
 public class ApiKeyStore {
 
   public enum Plan {
-     FREE(60, 1, 3),
-     BUSINESS(600, 5, 10),
-     PRO(1200, 10, 13);
+     FREE(60, 0, 2),
+     BUSINESS(600, 5, 15),
+     PRO(1200, 10, 25);
 
      public final int requestsPerMinute;
      public final int sseConnections;
