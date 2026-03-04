@@ -26,7 +26,6 @@ public class PriceBroadcaster {
     public final SseEmitter emitter;
     public final Set<String> symbols;
     public final String fiat;
-    public volatile long lastPingMs = 0L;
 
     public Subscription(SseEmitter emitter, Set<String> symbols, String fiat) {
       this.emitter = emitter;
@@ -159,16 +158,12 @@ public class PriceBroadcaster {
   }
 
   public void broadcastPing() {
-    long now = System.currentTimeMillis();
 
     for (var entry : byKey.entrySet()) {
       String apiKey = entry.getKey();
       CopyOnWriteArrayList<Subscription> subs = entry.getValue();
 
       for (Subscription sub : subs) {
-        if (now - sub.lastPingMs < 500) continue;
-        sub.lastPingMs = now;
-        
         try {
           sub.emitter.send(SseEmitter.event().name("ping").data(Map.of(
             "ok", true,
