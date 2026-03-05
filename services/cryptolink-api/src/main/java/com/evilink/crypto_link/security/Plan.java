@@ -1,7 +1,7 @@
 package com.evilink.crypto_link.security;
 
 public enum Plan {
-    FREE(30, 1),
+    FREE(60, 0),
     PRO(120, 1),
     BUSINESS(6000, 20);
 

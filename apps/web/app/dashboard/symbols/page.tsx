@@ -15,9 +15,9 @@ import ApiKeyBar from "@/components/ApiKeyBar";
 
 
 const AVAILABLE = [
-  "BTC","ETH","SOL","XRP","ADA","DOGE","BNB","AVAX","LINK","MATIC",
+  "BTC","ETH","SOL","XRP","ADA","DOGE","BNB","AVAX","LINK",
   "DOT","LTC","BCH","UNI","ATOM","NEAR","ARB","OP","USDT","SUI",
-  "USDC", "SHIB", "DAI", "XLM", "FTM", "VET", "TRX"
+  "USDC", "DAI", "XLM", "FTM", "VET", "TRX"
 ];
 
 
