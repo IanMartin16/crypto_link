@@ -1,6 +1,7 @@
 package com.evilink.crypto_link.service;
 
 import com.evilink.crypto_link.metrics.ApiMetrics;
+import com.evilink.crypto_link.history.PriceHistoryCache;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,15 +17,17 @@ public class PriceService {
     private final CoinGeckoPriceProvider provider;
     private final PriceCache cache;
     private final ApiMetrics metrics;
+    private final PriceHistoryCache historyCache;
     private static final Logger log = LoggerFactory.getLogger(PriceService.class);
 
     // TTL corto para MVP (evita pegarle demasiado a CoinGecko)
     private final long ttlMs = 3000; // 3 segundos
 
-    public PriceService(CoinGeckoPriceProvider provider, PriceCache cache, ApiMetrics metrics) {
+    public PriceService(CoinGeckoPriceProvider provider, PriceCache cache, ApiMetrics metrics, PriceHistoryCache historyCache) {
         this.provider = provider;
         this.cache = cache;
         this.metrics = metrics;
+        this.historyCache = historyCache;
     }
 
     public Result getPrices(List<String> symbols, String fiat) {
@@ -42,6 +45,7 @@ public class PriceService {
 
         // 1) si hay cache fresco, regresa cache
         if (entry != null && entry.isFresh(now)) {
+            entry.prices.forEach((symbol, value) -> historyCache.add(fiat, symbol, value));
             return Result.from(entry.prices, fiat, "cache", entry.fetchedAtEpochMs);
         }
 
@@ -49,12 +53,14 @@ public class PriceService {
         try {
             Map<String, BigDecimal> fresh = provider.getPrices(Arrays.asList(symbolsCsv.split(",")), fiat);
             cache.put(key, fresh, ttlMs);
+            fresh.forEach((symbol, value) -> historyCache.add(fiat, symbol, value));
             return Result.from(fresh, fiat, "coingecko", System.currentTimeMillis());
         } catch (Exception e) {
             metrics.incUpstreamError("coingecko");
             log.warn("Upstream error provider=coingecko fiat={} symbols={}", fiat, symbolsCsv, e);
             // 3) si falla proveedor y hay cache viejo, regresa stale
             if (entry != null) {
+                entry.prices.forEach((symbol, value) -> historyCache.add(fiat, symbol, value));
                 return Result.from(entry.prices, fiat, "stale-cache", entry.fetchedAtEpochMs);
             }
             // 4) si no hay nada, truena (lo convertimos a 502 en controller)
