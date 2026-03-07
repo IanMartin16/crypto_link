@@ -28,18 +28,27 @@ public class PriceHistoryCache {
     private static final int MAX_POINTS = 24;
 
     public void add(String fiat, String symbol, BigDecimal value) {
-        if (fiat == null || symbol == null || value == null) return;
+    if (fiat == null || symbol == null || value == null) return;
 
-        String key = fiat.toUpperCase() + ":" + symbol.toUpperCase();
-        Deque<Point> q = series.computeIfAbsent(key, k -> new ArrayDeque<>());
+    String key = fiat.toUpperCase() + ":" + symbol.toUpperCase();
+    Deque<Point> q = series.computeIfAbsent(key, k -> new ArrayDeque<>());
 
-        synchronized (q) {
-            q.addLast(new Point(Instant.now().toString(), value));
-            while (q.size() > MAX_POINTS) {
-                q.removeFirst();
+    synchronized (q) {
+        // ✅ evita duplicados consecutivos
+        if (!q.isEmpty()) {
+            Point last = q.peekLast();
+            if (last != null && last.v != null && last.v.compareTo(value) == 0) {
+                return;
             }
         }
+
+        q.addLast(new Point(Instant.now().toString(), value));
+
+        while (q.size() > MAX_POINTS) {
+            q.removeFirst();
+        }
     }
+}
 
     public List<Point> get(String fiat, String symbol) {
         String key = fiat.toUpperCase() + ":" + symbol.toUpperCase();
