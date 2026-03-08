@@ -25,14 +25,19 @@ public class MomentumService {
             List<PriceHistoryCache.Point> points = historyCache.get(fiat, symbol);
 
             if (points == null || points.size() < 3) {
-                out.add(new MomentumRow(
-                    symbol.toUpperCase(),
-                    "flat",
-                    BigDecimal.ZERO,
-                    "low",
-                    BigDecimal.ZERO,
-                    null,
-                    "insufficient-history"
+               BigDecimal lastValue = null;
+               if (points != null && !points.isEmpty()) {
+                   lastValue = points.get(points.size() - 1).v;
+               }
+
+               out.add(new MomentumRow(
+                   symbol.toUpperCase(),
+                   "flat",
+                   BigDecimal.ZERO,
+                   "low",
+                   BigDecimal.ZERO,
+                   lastValue == null ? null : lastValue.setScale(2, java.math.RoundingMode.HALF_UP),
+                   "insufficient-history"
                 ));
                 continue;
             }
