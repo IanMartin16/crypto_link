@@ -63,11 +63,12 @@ public class RegimeService {
         double confidence = Math.min(1.0, Math.abs(avg) / 1.5);
 
         String summary = switch (state) {
-            case "bullish" -> "Momentum y tendencias favorecen un sesgo alcista moderado.";
-            case "bearish" -> "Momentum y tendencias favorecen un sesgo bajista moderado.";
-            case "mixed" -> "Las señales muestran un mercado mixto con sesgos encontrados.";
-            default -> "Las señales muestran un mercado estable o sin dirección dominante.";
+           case "bullish" -> "Momentum and trend signals support a moderately bullish bias.";
+           case "bearish" -> "Momentum and trend signals support a moderately bearish bias.";
+           case "mixed" -> "Signals indicate a mixed market with conflicting bias.";
+           default -> "Signals indicate a stable market with no dominant direction.";
         };
+        
 
         return new RegimeResult(
             state,
