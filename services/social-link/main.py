@@ -1,5 +1,7 @@
 from fastapi import FastAPI, Query
 from datetime import datetime, timezone
+from fastapi.middleware.cors import CORSMiddleware
+
 
 app = FastAPI(title="social-link", version="0.1.0")
 
@@ -47,7 +49,16 @@ NARRATIVE_TAGS = {
     "trend expansion",
     "risk-off",
 }
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "https://www.cryptolink.mx",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def attention_score_from_rank(rank: int | None, index: int = 0) -> float:
     safe_rank = rank if isinstance(rank, int) and rank > 0 else 9999
