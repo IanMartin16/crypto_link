@@ -1,7 +1,10 @@
 from fastapi import FastAPI, Query
 from datetime import datetime, timezone
 from fastapi.middleware.cors import CORSMiddleware
+from clients.alternative_client import fetch_fear_greed
+from adapters.alternative_adapter import map_fear_greed_to_backdrop
 from services.basic_signals_service import get_basic_signals
+
 
 app = FastAPI(title="social-link", version="0.1.0")
 
@@ -227,4 +230,13 @@ async def basic_signals(
     limit: int = Query(default=3),
 ):
     asset_list = [s.strip().upper() for s in assets.split(",")] if assets else None
-    return get_basic_signals(window=window, assets=asset_list, limit=limit)
+
+    result = build_basic_signals(window=window, assets=asset_list, limit=limit)
+
+    try:
+        fng = await fetch_fear_greed()
+        result["backdrop"] = map_fear_greed_to_backdrop(fng)
+    except Exception:
+        result["backdrop"] = None
+
+    return result    
