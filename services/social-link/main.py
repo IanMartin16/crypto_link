@@ -231,7 +231,7 @@ async def basic_signals(
 ):
     asset_list = [s.strip().upper() for s in assets.split(",")] if assets else None
 
-    result = build_basic_signals(window=window, assets=asset_list, limit=limit)
+    result = await build_basic_signals(window=window, assets=asset_list, limit=limit)
 
     try:
         fng = await fetch_fear_greed()
