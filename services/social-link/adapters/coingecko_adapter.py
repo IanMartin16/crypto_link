@@ -3,7 +3,7 @@ from models.basic_signals import (
     BasicSignalsMarket,
     SocialLinkBasicSignalsResponse,
 )
-from app.utils.symbol_policy import (
+from utils.symbol_policy import (
     ALLOWED_SOCIAL_ASSETS,
     FALLBACK_ASSETS,
     NARRATIVE_TAGS,
