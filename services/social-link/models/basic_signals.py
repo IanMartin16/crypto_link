@@ -5,6 +5,11 @@ Direction = Literal["up", "down", "flat"]
 Coverage = Literal["low", "moderate", "broad"]
 Window = Literal["15m", "30m", "1h", "4h"]
 
+class MarketBackdrop(BaseModel):
+    fearGreedValue: int | None = None
+    fearGreedLabel: str | None = None
+    source: str | None = None
+    ts: str | None = None
 
 class SocialAttentionItem(BaseModel):
     asset: str
@@ -28,3 +33,5 @@ class SocialLinkBasicSignalsResponse(BaseModel):
     ts: str
     window: Window
     market: BasicSignalsMarket
+    backdrop: Optional[MarketBackdrop] = None
+    

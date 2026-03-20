@@ -18,8 +18,8 @@ async def get_basic_signals(window: str = "1h", assets: list[str] | None = None,
 
     try:
         fng = await fetch_fear_greed()
-        result["backdrop"] = map_fear_greed_to_backdrop(fng)
+        result.backdrop = map_fear_greed_to_backdrop(fng)
     except Exception:
-        result["backdrop"] = None
+        result.backdrop = None
 
     return result
