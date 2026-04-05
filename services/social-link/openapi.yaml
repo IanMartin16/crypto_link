@@ -1,0 +1,251 @@
+openapi: 3.1.0
+info:
+  title: Social Link API
+  version: 0.1.0
+  description: >
+    Social Link is the lightweight attention, narrative, and market-backdrop layer
+    within Evilink. It provides basic social/attention signals, narrative tags,
+    and contextual market backdrop for downstream consumers such as CryptoLink and Nexus.
+
+servers:
+  - url: https://social-link-production.up.railway.app
+    description: Production
+
+tags:
+  - name: Health
+    description: Service health endpoints
+  - name: Signals
+    description: Attention, narrative, and backdrop signals
+  - name: Trends
+    description: Lightweight trend signals (MVP)
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                required:
+                  - ok
+
+  /internal/v1/basic-signals:
+    get:
+      tags:
+        - Signals
+      summary: Get basic social and attention signals
+      operationId: getBasicSignals
+      parameters:
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [15m, 30m, 1h, 4h]
+            default: 1h
+        - name: assets
+          in: query
+          required: false
+          description: Comma-separated asset list
+          schema:
+            type: string
+            example: BTC,ETH,SOL
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 3
+      responses:
+        "200":
+          description: Basic signals response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SocialLinkBasicSignalsResponse"
+        "500":
+          description: Internal server error
+
+  /internal/v1/trends:
+    get:
+      tags:
+        - Trends
+      summary: Get lightweight trend signals
+      operationId: getTrends
+      parameters:
+        - name: symbols
+          in: query
+          required: false
+          description: Comma-separated symbol list
+          schema:
+            type: string
+            example: BTC,ETH,SOL
+      responses:
+        "200":
+          description: Trends response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrendResponse"
+        "500":
+          description: Internal server error
+
+components:
+  schemas:
+    SocialAttentionItem:
+      type: object
+      properties:
+        asset:
+          type: string
+          example: BTC
+        attentionScore:
+          type: number
+          example: 92
+        attentionDeltaPct:
+          type: number
+          example: 2.4
+        direction:
+          type: string
+          enum: [up, down, flat]
+          example: up
+        tags:
+          type: array
+          items:
+            type: string
+          example: [majors-led, store-of-value]
+      required:
+        - asset
+        - attentionScore
+        - attentionDeltaPct
+        - direction
+        - tags
+
+    MarketBackdrop:
+      type: object
+      properties:
+        fearGreedValue:
+          type: integer
+          nullable: true
+          example: 11
+        fearGreedLabel:
+          type: string
+          nullable: true
+          example: Extreme Fear
+        source:
+          type: string
+          nullable: true
+          example: alternative-me-fng
+        ts:
+          type: string
+          nullable: true
+          example: "1773964800"
+
+    BasicSignalsMarket:
+      type: object
+      properties:
+        topAssets:
+          type: array
+          items:
+            type: string
+          example: [BTC, SOL, ETH]
+        attentionLeaders:
+          type: array
+          items:
+            $ref: "#/components/schemas/SocialAttentionItem"
+        attentionLosers:
+          type: array
+          items:
+            $ref: "#/components/schemas/SocialAttentionItem"
+        tags:
+          type: array
+          items:
+            type: string
+          example: [majors-led, layer1]
+        coverage:
+          type: string
+          enum: [low, moderate, broad]
+          example: moderate
+      required:
+        - topAssets
+        - attentionLeaders
+        - attentionLosers
+        - tags
+        - coverage
+
+    SocialLinkBasicSignalsResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        source:
+          type: string
+          example: social-link-coingecko-v1
+        ts:
+          type: string
+          example: "2026-03-20T15:26:38.008307+00:00"
+        window:
+          type: string
+          enum: [15m, 30m, 1h, 4h]
+          example: 1h
+        market:
+          $ref: "#/components/schemas/BasicSignalsMarket"
+        backdrop:
+          anyOf:
+            - $ref: "#/components/schemas/MarketBackdrop"
+            - type: "null"
+      required:
+        - ok
+        - source
+        - ts
+        - window
+        - market
+
+    TrendItem:
+      type: object
+      properties:
+        symbol:
+          type: string
+          example: BTC
+        trend:
+          type: string
+          enum: [up, down, flat]
+          example: up
+        score:
+          type: number
+          example: 0.72
+        reason:
+          type: string
+          example: mvp: placeholder
+      required:
+        - symbol
+        - trend
+        - score
+        - reason
+
+    TrendResponse:
+      type: object
+      properties:
+        ts:
+          type: string
+          example: "2026-03-20T15:26:38.008307+00:00"
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrendItem"
+      required:
+        - ts
+        - data
