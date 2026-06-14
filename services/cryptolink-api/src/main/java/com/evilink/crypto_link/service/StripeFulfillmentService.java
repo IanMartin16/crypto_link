@@ -15,6 +15,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
 import java.time.OffsetDateTime;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -257,9 +259,175 @@ public class StripeFulfillmentService {
     return true;
   }
 
-  private Session retrieveSessionExpanded(
-      String sessionId
+  @Transactional
+  public boolean processSubscriptionUpdated(
+    String eventId,
+    String subscriptionId
   ) throws Exception {
+
+    if (isBlank(eventId) || isBlank(subscriptionId)) {
+      log.warn(
+          "Stripe subscription update rejected: missing eventId/subscriptionId"
+      );
+      return false;
+    }
+
+  /*
+   * Recuperamos directamente desde Stripe para no confiar solamente
+   * en los datos parciales del webhook.
+   */
+    Subscription subscription =
+      retrieveSubscriptionExpanded(subscriptionId);
+
+    SubscriptionResolution resolution =
+      resolveCryptoLinkSubscription(subscription);
+
+    if (resolution == null) {
+      recordIgnoredEvent(eventId, "IGNORED_WRONG_PRODUCT");
+      return true;
+    }
+
+    var fulfillment =
+      fulfillRepo.findBySubscriptionId(subscriptionId);
+
+    if (fulfillment.isEmpty()) {
+    /*
+     * Puede ocurrir si llega updated antes de que checkout termine
+     * de persistirse. Lanzamos error para que Stripe reintente.
+     */
+    throw new IllegalStateException(
+        "No fulfillment found for subscription " + subscriptionId
+      );
+    }
+
+    if (!reserveEvent(eventId)) {
+      log.info(
+        "Stripe subscription update duplicate ignored eventId={}",
+        eventId
+      );
+      return true;
+    }
+
+  String status = subscription.getStatus();
+
+  boolean cancelAtPeriodEnd =
+      Boolean.TRUE.equals(subscription.getCancelAtPeriodEnd());
+
+  OffsetDateTime stripeCancelAt =
+      fromEpoch(subscription.getCancelAt());
+
+  OffsetDateTime currentPeriodEnd =
+      fromEpoch(subscription.getCurrentPeriodEnd());
+
+  /*
+   * Stripe puede enviar cancel_at aunque cancel_at_period_end
+   * permanezca false.
+   */
+  boolean cancellationScheduled =
+      cancelAtPeriodEnd || stripeCancelAt != null;
+
+  boolean shouldRemainActive =
+      isActiveSubscriptionStatus(status);
+
+  fulfillRepo.updateSubscriptionState(
+      subscriptionId,
+      status,
+      cancelAtPeriodEnd,
+      cancellationScheduled,
+      currentPeriodEnd,
+      stripeCancelAt,
+      shouldRemainActive ? null : OffsetDateTime.now(ZoneOffset.UTC)
+  );
+
+  if (!shouldRemainActive) {
+    apiKeys.deactivate(fulfillment.get().apiKey());
+  }
+
+  markEventCompleted(eventId, "COMPLETED");
+
+  log.info(
+      "Stripe subscription updated eventId={} subscriptionId={} status={} cancellationScheduled={} active={}",
+      eventId,
+      subscriptionId,
+      status,
+      cancellationScheduled,
+      shouldRemainActive
+  );
+
+    return true;
+  }
+
+  @Transactional
+  public boolean processSubscriptionDeleted(
+    String eventId,
+    String subscriptionId
+  ) throws Exception {
+
+  if (isBlank(eventId) || isBlank(subscriptionId)) {
+    log.warn(
+        "Stripe subscription deletion rejected: missing eventId/subscriptionId"
+    );
+    return false;
+  }
+
+  Subscription subscription =
+      retrieveSubscriptionExpanded(subscriptionId);
+
+  SubscriptionResolution resolution =
+      resolveCryptoLinkSubscription(subscription);
+
+  if (resolution == null) {
+    recordIgnoredEvent(eventId, "IGNORED_WRONG_PRODUCT");
+    return true;
+  }
+
+  var fulfillment =
+      fulfillRepo.findBySubscriptionId(subscriptionId);
+
+  if (fulfillment.isEmpty()) {
+    throw new IllegalStateException(
+        "No fulfillment found for deleted subscription "
+            + subscriptionId
+    );
+  }
+
+  if (!reserveEvent(eventId)) {
+    log.info(
+        "Stripe subscription deletion duplicate ignored eventId={}",
+        eventId
+    );
+    return true;
+  }
+
+  OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+
+  fulfillRepo.updateSubscriptionState(
+      subscriptionId,
+      "canceled",
+      false,
+      false,
+      fromEpoch(subscription.getCurrentPeriodEnd()),
+      fromEpoch(subscription.getCancelAt()),
+      now
+  );
+
+  apiKeys.deactivate(fulfillment.get().apiKey());
+
+  markEventCompleted(eventId, "COMPLETED");
+
+  log.info(
+      "Stripe subscription deleted eventId={} subscriptionId={} apiKey={}",
+      eventId,
+      subscriptionId,
+      mask(fulfillment.get().apiKey())
+    );
+
+    return true;
+  }
+
+    private Session retrieveSessionExpanded(
+        String sessionId
+    )   throws Exception {
     ensureStripeConfiguration();
 
     Stripe.apiKey = stripeSecretKey;
@@ -271,89 +439,107 @@ public class StripeFulfillmentService {
     );
 
     return Session.retrieve(sessionId, params, null);
-  }
+    }
 
-  private SubscriptionResolution resolveCryptoLinkSubscription(
+    private Subscription retrieveSubscriptionExpanded(
       String subscriptionId
-  ) throws Exception {
-    ensureStripeConfiguration();
+    ) throws Exception {
 
+    ensureStripeConfiguration();
     Stripe.apiKey = stripeSecretKey;
 
     Map<String, Object> params = new HashMap<>();
     params.put(
-        "expand",
-        List.of("items.data.price.product")
+      "expand",
+      List.of("items.data.price.product")
     );
 
+    return Subscription.retrieve(
+      subscriptionId,
+      params,
+      null
+    );
+  }
+
+    private SubscriptionResolution resolveCryptoLinkSubscription(
+      String subscriptionId
+    ) throws Exception {
+
     Subscription subscription =
-        Subscription.retrieve(subscriptionId, params, null);
+        retrieveSubscriptionExpanded(subscriptionId);
 
-    if (subscription.getItems() == null
-        || subscription.getItems().getData() == null
-        || subscription.getItems().getData().isEmpty()) {
-      throw new IllegalStateException(
-          "Stripe fulfillment: subscription has no items"
-      );
-    }
+    return resolveCryptoLinkSubscription(subscriptionId);   
+    } 
 
-    if (subscription.getItems().getData().size() != 1) {
-      throw new IllegalStateException(
-          "Stripe fulfillment: expected exactly one subscription item"
-      );
-    }
+    private SubscriptionResolution resolveCryptoLinkSubscription(
+    Subscription subscription
+  ) {
 
-    var item = subscription.getItems().getData().get(0);
-    Price price = item.getPrice();
+  if (subscription == null) {
+    throw new IllegalArgumentException(
+        "Stripe subscription cannot be null"
+    );
+  }
 
-    if (price == null || isBlank(price.getId())) {
-      throw new IllegalStateException(
-          "Stripe fulfillment: subscription item has no price"
-      );
-    }
+  if (subscription.getItems() == null
+      || subscription.getItems().getData() == null
+      || subscription.getItems().getData().isEmpty()) {
+    throw new IllegalStateException(
+        "Stripe subscription has no items"
+    );
+  }
 
-    String priceId = price.getId();
-    String productId = extractProductId(price);
+  if (subscription.getItems().getData().size() != 1) {
+    throw new IllegalStateException(
+        "Expected exactly one Stripe subscription item"
+    );
+  }
 
-    if (isBlank(productId)) {
-      throw new IllegalStateException(
-          "Stripe fulfillment: subscription item has no productId"
-      );
-    }
+  var item = subscription.getItems().getData().get(0);
+  var price = item.getPrice();
 
-    if (!cryptoLinkProductId.equals(productId)) {
-      log.info(
-          "Stripe subscription does not belong to CryptoLink subscriptionId={} productId={} priceId={}",
-          subscriptionId,
-          productId,
-          priceId
-      );
+  if (price == null || isBlank(price.getId())) {
+    throw new IllegalStateException(
+        "Stripe subscription item has no price"
+    );
+  }
 
-      return null;
-    }
+  String priceId = price.getId();
+  String productId = extractProductId(price);
 
-    final String plan;
+  if (!cryptoLinkProductId.equals(productId)) {
+    log.info(
+        "Stripe subscription ignored: foreign product subscriptionId={} productId={} priceId={}",
+        subscription.getId(),
+        productId,
+        priceId
+    );
 
-    if (priceBusiness.equals(priceId)) {
-      plan = "BUSINESS";
-    } else if (pricePro.equals(priceId)) {
-      plan = "PRO";
-    } else {
-      log.warn(
-          "Stripe subscription rejected: CryptoLink product with unknown price subscriptionId={} productId={} priceId={}",
-          subscriptionId,
-          productId,
-          priceId
-      );
+    return null;
+  }
 
-      return null;
-    }
+  final String plan;
+
+  if (priceBusiness.equals(priceId)) {
+    plan = "BUSINESS";
+  } else if (pricePro.equals(priceId)) {
+    plan = "PRO";
+  } else {
+    log.warn(
+        "Stripe subscription ignored: unknown CryptoLink price subscriptionId={} productId={} priceId={}",
+        subscription.getId(),
+        productId,
+        priceId
+    );
+
+    return null;
+  }
 
     return new SubscriptionResolution(
-        plan,
-        priceId,
-        productId,
-        subscription.getStatus()
+      plan,
+      priceId,
+      productId,
+      subscription.getStatus()
     );
   }
 
@@ -514,6 +700,32 @@ public class StripeFulfillmentService {
 
     private DuplicateSubscriptionException(String message) {
       super(message);
+    }
+  }
+
+  private boolean isActiveSubscriptionStatus(String status) {
+    return Set.of(
+      "active",
+      "trialing",
+      "past_due"
+    ).contains(status);
+  }
+
+  private OffsetDateTime fromEpoch(Long epochSeconds) {
+    if (epochSeconds == null) return null;
+
+    return OffsetDateTime.ofInstant(
+      Instant.ofEpochSecond(epochSeconds),
+      ZoneOffset.UTC
+    );
+  }
+
+  private void recordIgnoredEvent(
+    String eventId,
+    String status
+  ) {
+    if (reserveEvent(eventId)) {
+      markEventCompleted(eventId, status);
     }
   }
 }

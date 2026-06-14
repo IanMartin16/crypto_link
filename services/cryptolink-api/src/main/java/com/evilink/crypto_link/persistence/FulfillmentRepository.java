@@ -3,6 +3,7 @@ package com.evilink.crypto_link.persistence;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.time.OffsetDateTime;
 import java.util.Optional;
 
 @Repository
@@ -200,35 +201,66 @@ public class FulfillmentRepository {
       String priceId,
       String productId,
       String subscriptionStatus
-  ) {}
+    ) {}
 
-  public void insert(
-    String email,
-    String plan,
-    String apiKey,
-    String source,
-    String eventId,
-    String sessionId
-  ) {
-    jdbc.update("""
-        insert into cryptolink_fulfillments(
+    public void insert(
+      String email,
+      String plan,
+      String apiKey,
+      String source,
+      String eventId,
+      String sessionId
+    ) {
+      jdbc.update("""
+          insert into cryptolink_fulfillments(
+            email,
+            plan,
+            api_key,
+            source,
+            event_id,
+            session_id,
+            email_status,
+            updated_at
+          )
+          values (?, ?, ?, ?, ?, ?, 'PENDING', now())
+          """,
           email,
           plan,
-          api_key,
+          apiKey,
           source,
-          event_id,
-          session_id,
-          email_status,
-          updated_at
-        )
-        values (?, ?, ?, ?, ?, ?, 'PENDING', now())
+          eventId,
+          sessionId
+      );
+    }
+
+    public int updateSubscriptionState(
+      String subscriptionId,
+      String subscriptionStatus,
+      boolean cancelAtPeriodEnd,
+      boolean cancellationScheduled,
+      OffsetDateTime currentPeriodEnd,
+      OffsetDateTime stripeCancelAt,
+      OffsetDateTime revokedAt
+  ) {
+    return jdbc.update("""
+        update cryptolink_fulfillments
+        set
+          subscription_status = ?,
+          cancel_at_period_end = ?,
+          cancellation_scheduled = ?,
+          current_period_end = ?,
+          stripe_cancel_at = ?,
+          revoked_at = ?,
+          updated_at = now()
+        where subscription_id = ?
         """,
-        email,
-        plan,
-        apiKey,
-        source,
-        eventId,
-        sessionId
+        subscriptionStatus,
+        cancelAtPeriodEnd,
+        cancellationScheduled,
+        currentPeriodEnd,
+        stripeCancelAt,
+        revokedAt,
+        subscriptionId
     );
   }
 }

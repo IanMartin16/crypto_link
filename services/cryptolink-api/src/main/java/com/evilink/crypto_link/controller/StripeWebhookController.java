@@ -3,6 +3,7 @@ package com.evilink.crypto_link.controller;
 import com.evilink.crypto_link.service.StripeFulfillmentService;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import io.swagger.v3.oas.annotations.Hidden;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,9 +11,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.StreamUtils;
-import org.springframework.web.bind.annotation.*;
-import io.swagger.v3.oas.annotations.Hidden;
-
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -28,9 +29,9 @@ import java.util.Map;
 @RequestMapping("/stripe")
 public class StripeWebhookController {
 
-  private static final Logger log = LoggerFactory.getLogger(StripeWebhookController.class);
+  private static final Logger log =
+      LoggerFactory.getLogger(StripeWebhookController.class);
 
-  // tolerancia típica Stripe: 5 min
   private static final long SIGNATURE_TOLERANCE_SECONDS = 300;
 
   @Value("${stripe.webhook-secret:}")
@@ -38,184 +39,567 @@ public class StripeWebhookController {
 
   private final StripeFulfillmentService fulfill;
 
-  public StripeWebhookController(StripeFulfillmentService fulfill) {
+  public StripeWebhookController(
+      StripeFulfillmentService fulfill
+  ) {
     this.fulfill = fulfill;
   }
 
-  @PostMapping(value = "/webhook", consumes = MediaType.APPLICATION_JSON_VALUE)
-  public ResponseEntity<Map<String, Object>> handle(HttpServletRequest request) {
+  @PostMapping(
+      value = "/webhook",
+      consumes = MediaType.APPLICATION_JSON_VALUE
+  )
+  public ResponseEntity<Map<String, Object>> handle(
+      HttpServletRequest request
+  ) {
 
-    String sigHeader = request.getHeader("Stripe-Signature");
+    String signatureHeader =
+        request.getHeader("Stripe-Signature");
+
     String uri = request.getRequestURI();
 
     final String payload;
+
     try {
-      payload = StreamUtils.copyToString(request.getInputStream(), StandardCharsets.UTF_8);
+      payload = StreamUtils.copyToString(
+          request.getInputStream(),
+          StandardCharsets.UTF_8
+      );
     } catch (Exception e) {
-      log.error("stripe webhook: failed reading body uri={}", uri, e);
-      return ResponseEntity.status(400).body(Map.of("ok", false, "error", "Could not read body"));
+      log.error(
+          "Stripe webhook: failed reading body uri={}",
+          uri,
+          e
+      );
+
+      return ResponseEntity.status(400).body(
+          Map.of(
+              "ok", false,
+              "error", "Could not read body"
+          )
+      );
     }
 
-    log.warn("? STRIPE WEBHOOK HIT uri={} len={} sigPresent={}",
-        uri, payload == null ? -1 : payload.length(), (sigHeader != null && !sigHeader.isBlank()));
+    log.info(
+        "Stripe webhook hit uri={} payloadLength={} signaturePresent={}",
+        uri,
+        payload == null ? -1 : payload.length(),
+        !isBlank(signatureHeader)
+    );
 
-    if (payload == null || payload.isBlank()) {
-      return ResponseEntity.status(400).body(Map.of("ok", false, "error", "Empty payload"));
+    if (isBlank(payload)) {
+      return ResponseEntity.badRequest().body(
+          Map.of(
+              "ok", false,
+              "error", "Empty payload"
+          )
+      );
     }
 
-    if (sigHeader == null || sigHeader.isBlank()) {
-      log.warn("stripe webhook missing Stripe-Signature header");
-      return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "Missing Stripe-Signature"));
+    if (isBlank(signatureHeader)) {
+      log.warn(
+          "Stripe webhook missing Stripe-Signature header"
+      );
+
+      return ResponseEntity.badRequest().body(
+          Map.of(
+              "ok", false,
+              "error", "Missing Stripe-Signature"
+          )
+      );
     }
 
-    if (webhookSecret == null || webhookSecret.isBlank()) {
-      log.error("stripe webhook secret not configured");
-      return ResponseEntity.status(500).body(Map.of("ok", false, "error", "Webhook secret not configured"));
+    if (isBlank(webhookSecret)) {
+      log.error(
+          "Stripe webhook secret not configured"
+      );
+
+      return ResponseEntity.status(500).body(
+          Map.of(
+              "ok", false,
+              "error", "Webhook secret not configured"
+          )
+      );
     }
 
-    // 1) Verify signature WITHOUT parsing Stripe Event
+    /*
+     * 1. Verificar la firma usando el payload crudo.
+     */
     try {
-      verifyStripeSignature(payload, sigHeader, webhookSecret, SIGNATURE_TOLERANCE_SECONDS);
+      verifyStripeSignature(
+          payload,
+          signatureHeader,
+          webhookSecret,
+          SIGNATURE_TOLERANCE_SECONDS
+      );
     } catch (Exception e) {
-      log.warn("? STRIPE SIGNATURE INVALID: {}", e.getMessage());
-      return ResponseEntity.status(400).body(Map.of("ok", false, "error", "Invalid signature"));
+      log.warn(
+          "Stripe webhook signature invalid: {}",
+          e.getMessage()
+      );
+
+      return ResponseEntity.badRequest().body(
+          Map.of(
+              "ok", false,
+              "error", "Invalid signature"
+          )
+      );
     }
 
-    // 2) Minimal JSON parse (type/id/sessionId)
+    /*
+     * 2. Parseo mínimo del evento.
+     */
     final JsonObject root;
+
     try {
-      root = JsonParser.parseString(payload).getAsJsonObject();
+      root = JsonParser.parseString(payload)
+          .getAsJsonObject();
     } catch (Exception e) {
-      log.error("? STRIPE WEBHOOK BAD PAYLOAD (json parse)", e);
-      return ResponseEntity.status(400).body(Map.of("ok", false, "error", "Bad payload"));
+      log.error(
+          "Stripe webhook bad JSON payload",
+          e
+      );
+
+      return ResponseEntity.badRequest().body(
+          Map.of(
+              "ok", false,
+              "error", "Bad payload"
+          )
+      );
     }
 
     String eventType = getAsString(root, "type");
-    String eventId   = getAsString(root, "id");
+    String eventId = getAsString(root, "id");
 
-    if (eventType == null || eventId == null) {
-      log.error("? STRIPE WEBHOOK BAD PAYLOAD (missing type/id)");
-      return ResponseEntity.status(400).body(Map.of("ok", false, "error", "Bad payload"));
+    if (isBlank(eventType) || isBlank(eventId)) {
+      log.error(
+          "Stripe webhook bad payload: missing type or id"
+      );
+
+      return ResponseEntity.badRequest().body(
+          Map.of(
+              "ok", false,
+              "error", "Bad payload"
+          )
+      );
     }
 
-    log.info("stripe webhook received type={} id={}", eventType, eventId);
+    log.info(
+        "Stripe webhook received type={} eventId={}",
+        eventType,
+        eventId
+    );
 
-    // 3) We only care about checkout.session.completed
-    if (!"checkout.session.completed".equals(eventType)) {
-      return ResponseEntity.ok(Map.of("ok", true, "ignored", true, "type", eventType, "eventId", eventId));
-    }
+    /*
+     * Tanto Checkout Session como Subscription tienen su ID en
+     * data.object.id.
+     */
+    String objectId = extractObjectId(root);
 
-    String sessionId = extractCheckoutSessionId(root);
-    if (sessionId == null || sessionId.isBlank()) {
-      log.warn("stripe webhook: checkout.session.completed missing sessionId eventId={}", eventId);
-      // 500 para que Stripe reintente (a veces llega incompleto/bug de forwarding)
-      return ResponseEntity.status(500).body(Map.of("ok", false, "error", "Missing sessionId"));
-    }
-
-    // 4) Fulfillment
     try {
-      boolean ok = fulfill.processCheckoutCompleted(eventId, sessionId);
+      return switch (eventType) {
 
-      if (!ok) {
-        log.warn("stripe fulfillment returned false eventId={} sessionId={}", eventId, sessionId);
-        return ResponseEntity.status(500).body(Map.of("ok", false, "error", "Fulfillment returned false"));
-      }
+        case "checkout.session.completed" ->
+            processCheckoutCompleted(
+                eventId,
+                objectId
+            );
 
-      return ResponseEntity.ok(Map.of("ok", true, "processed", true, "eventId", eventId, "sessionId", sessionId));
+        case "customer.subscription.updated" ->
+            processSubscriptionUpdated(
+                eventId,
+                objectId
+            );
+
+        case "customer.subscription.deleted" ->
+            processSubscriptionDeleted(
+                eventId,
+                objectId
+            );
+
+        default -> {
+          log.debug(
+              "Stripe webhook event ignored type={} eventId={}",
+              eventType,
+              eventId
+          );
+
+          yield ResponseEntity.ok(
+              Map.of(
+                  "ok", true,
+                  "ignored", true,
+                  "type", eventType,
+                  "eventId", eventId
+              )
+          );
+        }
+      };
     } catch (Exception e) {
-      log.error("stripe fulfillment failed eventId={} sessionId={}", eventId, sessionId, e);
-      return ResponseEntity.status(500).body(Map.of("ok", false, "error", "Fulfillment failed"));
+      log.error(
+          "Stripe event processing failed type={} eventId={} objectId={}",
+          eventType,
+          eventId,
+          objectId,
+          e
+      );
+
+      /*
+       * 500 permite que Stripe reintente el evento.
+       */
+      return ResponseEntity.status(500).body(
+          Map.of(
+              "ok", false,
+              "error", "Stripe event processing failed",
+              "type", eventType,
+              "eventId", eventId
+          )
+      );
     }
   }
 
-  private static String extractCheckoutSessionId(JsonObject root) {
+  private ResponseEntity<Map<String, Object>>
+  processCheckoutCompleted(
+      String eventId,
+      String sessionId
+  ) throws Exception {
+
+    if (isBlank(sessionId)) {
+      log.warn(
+          "Stripe checkout event missing sessionId eventId={}",
+          eventId
+      );
+
+      return ResponseEntity.status(500).body(
+          Map.of(
+              "ok", false,
+              "error", "Missing checkout session id",
+              "eventId", eventId
+          )
+      );
+    }
+
+    boolean processed =
+        fulfill.processCheckoutCompleted(
+            eventId,
+            sessionId
+        );
+
+    if (!processed) {
+      log.warn(
+          "Stripe checkout fulfillment returned false eventId={} sessionId={}",
+          eventId,
+          sessionId
+      );
+
+      return ResponseEntity.status(500).body(
+          Map.of(
+              "ok", false,
+              "error", "Checkout fulfillment returned false",
+              "eventId", eventId
+          )
+      );
+    }
+
+    return ResponseEntity.ok(
+        Map.of(
+            "ok", true,
+            "processed", true,
+            "type", "checkout.session.completed",
+            "eventId", eventId,
+            "sessionId", sessionId
+        )
+    );
+  }
+
+  private ResponseEntity<Map<String, Object>>
+  processSubscriptionUpdated(
+      String eventId,
+      String subscriptionId
+  ) throws Exception {
+
+    if (isBlank(subscriptionId)) {
+      log.warn(
+          "Stripe subscription update missing subscriptionId eventId={}",
+          eventId
+      );
+
+      return ResponseEntity.status(500).body(
+          Map.of(
+              "ok", false,
+              "error", "Missing subscription id",
+              "eventId", eventId
+          )
+      );
+    }
+
+    boolean processed =
+        fulfill.processSubscriptionUpdated(
+            eventId,
+            subscriptionId
+        );
+
+    if (!processed) {
+      log.warn(
+          "Stripe subscription update returned false eventId={} subscriptionId={}",
+          eventId,
+          subscriptionId
+      );
+
+      return ResponseEntity.status(500).body(
+          Map.of(
+              "ok", false,
+              "error", "Subscription update returned false",
+              "eventId", eventId
+          )
+      );
+    }
+
+    return ResponseEntity.ok(
+        Map.of(
+            "ok", true,
+            "processed", true,
+            "type", "customer.subscription.updated",
+            "eventId", eventId,
+            "subscriptionId", subscriptionId
+        )
+    );
+  }
+
+  private ResponseEntity<Map<String, Object>>
+  processSubscriptionDeleted(
+      String eventId,
+      String subscriptionId
+  ) throws Exception {
+
+    if (isBlank(subscriptionId)) {
+      log.warn(
+          "Stripe subscription deletion missing subscriptionId eventId={}",
+          eventId
+      );
+
+      return ResponseEntity.status(500).body(
+          Map.of(
+              "ok", false,
+              "error", "Missing subscription id",
+              "eventId", eventId
+          )
+      );
+    }
+
+    boolean processed =
+        fulfill.processSubscriptionDeleted(
+            eventId,
+            subscriptionId
+        );
+
+    if (!processed) {
+      log.warn(
+          "Stripe subscription deletion returned false eventId={} subscriptionId={}",
+          eventId,
+          subscriptionId
+      );
+
+      return ResponseEntity.status(500).body(
+          Map.of(
+              "ok", false,
+              "error", "Subscription deletion returned false",
+              "eventId", eventId
+          )
+      );
+    }
+
+    return ResponseEntity.ok(
+        Map.of(
+            "ok", true,
+            "processed", true,
+            "type", "customer.subscription.deleted",
+            "eventId", eventId,
+            "subscriptionId", subscriptionId
+        )
+    );
+  }
+
+  private static String extractObjectId(
+      JsonObject root
+  ) {
     try {
-      JsonObject data = root.getAsJsonObject("data");
-      if (data == null) return null;
-      JsonObject obj = data.getAsJsonObject("object");
-      if (obj == null) return null;
-      return obj.has("id") && !obj.get("id").isJsonNull() ? obj.get("id").getAsString() : null;
+      JsonObject data =
+          root.getAsJsonObject("data");
+
+      if (data == null) {
+        return null;
+      }
+
+      JsonObject object =
+          data.getAsJsonObject("object");
+
+      if (object == null) {
+        return null;
+      }
+
+      return getAsString(object, "id");
     } catch (Exception e) {
       return null;
     }
   }
 
-  private static String getAsString(JsonObject obj, String key) {
-    if (obj == null || key == null) return null;
-    if (!obj.has(key) || obj.get(key).isJsonNull()) return null;
+  private static String getAsString(
+      JsonObject object,
+      String key
+  ) {
+    if (object == null || key == null) {
+      return null;
+    }
+
+    if (!object.has(key)
+        || object.get(key).isJsonNull()) {
+      return null;
+    }
+
     try {
-      return obj.get(key).getAsString();
+      return object.get(key).getAsString();
     } catch (Exception e) {
       return null;
     }
   }
 
   /**
-   * Manual Stripe signature verification (HMAC-SHA256), avoids Stripe Event parsing.
-   * Header format: "t=timestamp,v1=signature[,v1=signature2...]"
+   * Verificación manual HMAC-SHA256.
+   *
+   * Stripe-Signature:
+   * t=timestamp,v1=signature[,v1=signature2...]
    */
-  private static void verifyStripeSignature(String payload, String sigHeader, String secret, long toleranceSeconds) throws Exception {
+  private static void verifyStripeSignature(
+      String payload,
+      String signatureHeader,
+      String secret,
+      long toleranceSeconds
+  ) throws Exception {
+
     long timestamp = -1;
     List<String> signatures = new ArrayList<>();
 
-    String[] parts = sigHeader.split(",");
-    for (String p : parts) {
-      String s = p.trim();
-      if (s.startsWith("t=")) {
-        timestamp = Long.parseLong(s.substring(2));
-      } else if (s.startsWith("v1=")) {
-        signatures.add(s.substring(3));
+    String[] parts = signatureHeader.split(",");
+
+    for (String part : parts) {
+      String value = part.trim();
+
+      if (value.startsWith("t=")) {
+        timestamp =
+            Long.parseLong(value.substring(2));
+      } else if (value.startsWith("v1=")) {
+        signatures.add(value.substring(3));
       }
     }
 
     if (timestamp <= 0 || signatures.isEmpty()) {
-      throw new IllegalArgumentException("Invalid Stripe-Signature header format");
+      throw new IllegalArgumentException(
+          "Invalid Stripe-Signature header format"
+      );
     }
 
     long now = Instant.now().getEpochSecond();
-    long diff = Math.abs(now - timestamp);
-    if (diff > toleranceSeconds) {
-      throw new IllegalArgumentException("Timestamp outside tolerance: diff=" + diff + "s");
+    long difference = Math.abs(now - timestamp);
+
+    if (difference > toleranceSeconds) {
+      throw new IllegalArgumentException(
+          "Timestamp outside tolerance: diff="
+              + difference
+              + "s"
+      );
     }
 
-    String signedPayload = timestamp + "." + payload;
-    String expected = hmacSha256Hex(secret, signedPayload);
+    String signedPayload =
+        timestamp + "." + payload;
+
+    String expected =
+        hmacSha256Hex(secret, signedPayload);
 
     boolean match = false;
-    for (String sig : signatures) {
-      if (constantTimeEqualsHex(expected, sig)) {
+
+    for (String signature : signatures) {
+      if (constantTimeEqualsHex(
+          expected,
+          signature
+      )) {
         match = true;
         break;
       }
     }
 
     if (!match) {
-      throw new IllegalArgumentException("No signatures found matching the expected signature for payload");
+      throw new IllegalArgumentException(
+          "No signatures found matching the expected signature"
+      );
     }
   }
 
-  private static String hmacSha256Hex(String secret, String data) throws Exception {
+  private static String hmacSha256Hex(
+      String secret,
+      String data
+  ) throws Exception {
+
     Mac mac = Mac.getInstance("HmacSHA256");
-    mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-    byte[] raw = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+
+    mac.init(
+        new SecretKeySpec(
+            secret.getBytes(StandardCharsets.UTF_8),
+            "HmacSHA256"
+        )
+    );
+
+    byte[] raw =
+        mac.doFinal(
+            data.getBytes(StandardCharsets.UTF_8)
+        );
+
     return toHex(raw);
   }
 
   private static String toHex(byte[] bytes) {
-    char[] hexArray = "0123456789abcdef".toCharArray();
-    char[] hexChars = new char[bytes.length * 2];
-    for (int j = 0; j < bytes.length; j++) {
-      int v = bytes[j] & 0xFF;
-      hexChars[j * 2] = hexArray[v >>> 4];
-      hexChars[j * 2 + 1] = hexArray[v & 0x0F];
+    char[] hexArray =
+        "0123456789abcdef".toCharArray();
+
+    char[] hexChars =
+        new char[bytes.length * 2];
+
+    for (int index = 0;
+         index < bytes.length;
+         index++) {
+
+      int value = bytes[index] & 0xFF;
+
+      hexChars[index * 2] =
+          hexArray[value >>> 4];
+
+      hexChars[index * 2 + 1] =
+          hexArray[value & 0x0F];
     }
+
     return new String(hexChars);
   }
 
-  private static boolean constantTimeEqualsHex(String a, String b) {
-    if (a == null || b == null) return false;
-    byte[] ba = a.getBytes(StandardCharsets.UTF_8);
-    byte[] bb = b.getBytes(StandardCharsets.UTF_8);
-    return MessageDigest.isEqual(ba, bb);
+  private static boolean constantTimeEqualsHex(
+      String first,
+      String second
+  ) {
+    if (first == null || second == null) {
+      return false;
+    }
+
+    byte[] firstBytes =
+        first.getBytes(StandardCharsets.UTF_8);
+
+    byte[] secondBytes =
+        second.getBytes(StandardCharsets.UTF_8);
+
+    return MessageDigest.isEqual(
+        firstBytes,
+        secondBytes
+    );
+  }
+
+  private static boolean isBlank(String value) {
+    return value == null || value.isBlank();
   }
 }
