@@ -6,12 +6,13 @@ import com.stripe.Stripe;
 import com.stripe.model.Price;
 import com.stripe.model.Subscription;
 import com.stripe.model.checkout.Session;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
 import java.time.OffsetDateTime;
@@ -37,6 +38,7 @@ public class StripeFulfillmentService {
   private final ApiKeyRepository apiKeys;
   private final SmtpEmailService email;
   private final FulfillmentRepository fulfillRepo;
+  private final TransactionTemplate transactionTemplate;
 
   private final SecureRandom secureRandom = new SecureRandom();
 
@@ -56,210 +58,258 @@ public class StripeFulfillmentService {
       JdbcTemplate jdbc,
       ApiKeyRepository apiKeys,
       SmtpEmailService email,
-      FulfillmentRepository fulfillRepo
+      FulfillmentRepository fulfillRepo,
+      PlatformTransactionManager transactionManager
   ) {
     this.jdbc = jdbc;
     this.apiKeys = apiKeys;
     this.email = email;
     this.fulfillRepo = fulfillRepo;
+    this.transactionTemplate = new TransactionTemplate(transactionManager);
   }
 
-  @Transactional
   public boolean processCheckoutCompleted(
-      String eventId,
-      String sessionId
-  ) throws Exception {
+    String eventId,
+    String sessionId
+) throws Exception {
 
-    if (isBlank(eventId) || isBlank(sessionId)) {
-      log.warn(
-          "Stripe fulfillment rejected: missing eventId/sessionId"
-      );
-      return false;
-    }
-
-    Session session = retrieveSessionExpanded(sessionId);
-
-    String subscriptionId = session.getSubscription();
-    String customerId = session.getCustomer();
-    String emailTo = normalizeEmail(extractEmail(session));
-
-    if (isBlank(subscriptionId)) {
-      log.warn(
-          "Stripe fulfillment rejected: missing subscriptionId eventId={} sessionId={}",
-          eventId,
-          sessionId
-      );
-      return false;
-    }
-
-    /*
-     * Idempotencia comercial.
-     *
-     * Una suscripción solo puede tener un fulfillment.
-     */
-    var existing =
-        fulfillRepo.findBySubscriptionId(subscriptionId);
-
-    if (existing.isPresent()) {
-      log.info(
-          "Stripe fulfillment duplicate subscription ignored eventId={} sessionId={} subscriptionId={} apiKey={}",
-          eventId,
-          sessionId,
-          subscriptionId,
-          mask(existing.get().apiKey())
-      );
-
-      markEventCompleted(eventId, "DUPLICATE_SUBSCRIPTION");
-      return true;
-    }
-
-    SubscriptionResolution resolution =
-        resolveCryptoLinkSubscription(subscriptionId);
-
-    /*
-     * Un evento válido de Stripe puede pertenecer a Curpify,
-     * Data_Link o cualquier otro producto de la cuenta.
-     *
-     * Se ignora sin reintento porque no es un error transitorio.
-     */
-    if (resolution == null) {
-      log.info(
-          "Stripe fulfillment ignored: foreign product or price eventId={} sessionId={} subscriptionId={}",
-          eventId,
-          sessionId,
-          subscriptionId
-      );
-
-      markEventCompleted(eventId, "IGNORED_WRONG_PRODUCT");
-      return true;
-    }
-
-    if (isBlank(emailTo)) {
-      log.warn(
-          "Stripe fulfillment failed: missing customer email eventId={} sessionId={} subscriptionId={}",
-          eventId,
-          sessionId,
-          subscriptionId
-      );
-
-      /*
-       * Se lanza excepción para provocar rollback y permitir
-       * que Stripe vuelva a intentar.
-       */
-      throw new IllegalStateException(
-          "Stripe fulfillment: missing customer email"
-      );
-    }
-
-    validatePlan(resolution.plan());
-
-    /*
-     * Reservamos el evento después de validar producto, precio,
-     * suscripción y datos indispensables.
-     */
-    if (!reserveEvent(eventId)) {
-      log.info(
-          "Stripe fulfillment duplicate event ignored eventId={}",
-          eventId
-      );
-      return true;
-    }
-
-    String apiKey = genKey();
-
-    /*
-     * Primero insertamos la key y después el fulfillment dentro
-     * de la misma transacción. Cualquier error provoca rollback.
-     */
-    int insertedKey = apiKeys.insertKey(
-        apiKey,
-        resolution.plan(),
-        "ACTIVE",
-        (OffsetDateTime) null
+  if (isBlank(eventId) || isBlank(sessionId)) {
+    log.warn(
+        "Stripe fulfillment rejected: missing eventId/sessionId"
     );
+    return false;
+  }
 
-    if (insertedKey != 1) {
-      throw new IllegalStateException(
-        "Stripe fulfillment: API key could not be inserted"
-      );
-    }
+  /*
+   * Todas las llamadas externas a Stripe ocurren fuera
+   * de la transacción JDBC.
+   */
+  Session session = retrieveSessionExpanded(sessionId);
 
-    boolean fulfillmentInserted = fulfillRepo.insertIfAbsent(
-        emailTo,
-        resolution.plan(),
-        apiKey,
-        "stripe",
+  String subscriptionId = session.getSubscription();
+  String customerId = session.getCustomer();
+  String emailTo = normalizeEmail(extractEmail(session));
+
+  if (isBlank(subscriptionId)) {
+    log.warn(
+        "Stripe fulfillment rejected: missing subscriptionId eventId={} sessionId={}",
         eventId,
-        sessionId,
-        customerId,
-        subscriptionId,
-        resolution.priceId(),
-        resolution.productId(),
-        resolution.subscriptionStatus()
+        sessionId
     );
+    return false;
+  }
 
-    if (!fulfillmentInserted) {
-      /*
-       * La suscripción fue insertada concurrentemente.
-       * Al lanzar excepción también hacemos rollback de la key
-       * recién creada, evitando una key huérfana.
-       */
-      throw new IllegalStateException(
-          "Stripe fulfillment already exists for subscription: " + subscriptionId
-      );
-    }
+  SubscriptionResolution resolution =
+      resolveCryptoLinkSubscription(subscriptionId);
 
-    try {
-      email.sendApiKey(
-          emailTo,
-          resolution.plan(),
-          apiKey
-      );
-
-      fulfillRepo.markEmailSent(emailTo, apiKey);
-
-      log.info(
-          "Stripe fulfillment email sent to={} plan={} subscriptionId={} apiKey={}",
-          emailTo,
-          resolution.plan(),
-          subscriptionId,
-          mask(apiKey)
-      );
-    } catch (Exception e) {
-      fulfillRepo.markEmailFailed(
-          emailTo,
-          apiKey,
-          e.getMessage()
-      );
-
-      log.warn(
-          "Stripe fulfillment email failed to={} plan={} subscriptionId={} apiKey={}",
-          emailTo,
-          resolution.plan(),
-          subscriptionId,
-          mask(apiKey),
-          e
-      );
-    }
-
-    markEventCompleted(eventId, "COMPLETED");
+  /*
+   * El evento es auténtico, pero pertenece a otro producto
+   * o a un precio que CryptoLink no reconoce.
+   */
+  if (resolution == null) {
+    transactionTemplate.executeWithoutResult(status -> {
+      if (reserveEvent(eventId)) {
+        markEventCompleted(
+            eventId,
+            "IGNORED_WRONG_PRODUCT"
+        );
+      }
+    });
 
     log.info(
-        "Stripe fulfillment completed eventId={} sessionId={} customerId={} subscriptionId={} productId={} priceId={} plan={} apiKey={}",
+        "Stripe fulfillment ignored: foreign product or price eventId={} sessionId={} subscriptionId={}",
         eventId,
         sessionId,
-        customerId,
-        subscriptionId,
-        resolution.productId(),
-        resolution.priceId(),
-        resolution.plan(),
-        mask(apiKey)
+        subscriptionId
     );
 
     return true;
   }
 
-  @Transactional
+  if (isBlank(emailTo)) {
+    throw new IllegalStateException(
+        "Stripe fulfillment: missing customer email"
+    );
+  }
+
+  validatePlan(resolution.plan());
+
+  /*
+   * Solo esta parte utiliza una transacción.
+   * No contiene llamadas a Stripe ni al proveedor de correo.
+   */
+  PersistResult persisted =
+      transactionTemplate.execute(status -> {
+
+        var existing =
+            fulfillRepo.findBySubscriptionId(
+                subscriptionId
+            );
+
+        if (existing.isPresent()) {
+          if (reserveEvent(eventId)) {
+            markEventCompleted(
+                eventId,
+                "DUPLICATE_SUBSCRIPTION"
+            );
+          }
+
+          return new PersistResult(
+              existing.get().apiKey(),
+              false
+          );
+        }
+
+        /*
+         * Puede bloquear momentáneamente si el mismo evento
+         * está siendo procesado en paralelo. Después del conflicto
+         * volvemos a buscar el fulfillment.
+         */
+        if (!reserveEvent(eventId)) {
+          var existingAfterDuplicateEvent =
+              fulfillRepo.findBySubscriptionId(
+                  subscriptionId
+              );
+
+          if (existingAfterDuplicateEvent.isPresent()) {
+            return new PersistResult(
+                existingAfterDuplicateEvent.get().apiKey(),
+                false
+            );
+          }
+
+          throw new IllegalStateException(
+              "Stripe event already reserved without fulfillment: "
+                  + eventId
+          );
+        }
+
+        String generatedApiKey = genKey();
+
+        int insertedKey = apiKeys.insertKey(
+            generatedApiKey,
+            resolution.plan(),
+            "ACTIVE",
+            null
+        );
+
+        if (insertedKey != 1) {
+          throw new IllegalStateException(
+              "Stripe fulfillment: API key could not be inserted"
+          );
+        }
+
+        boolean fulfillmentInserted =
+            fulfillRepo.insertIfAbsent(
+                emailTo,
+                resolution.plan(),
+                generatedApiKey,
+                "stripe",
+                eventId,
+                sessionId,
+                customerId,
+                subscriptionId,
+                resolution.priceId(),
+                resolution.productId(),
+                resolution.subscriptionStatus()
+            );
+
+        if (!fulfillmentInserted) {
+          /*
+           * La excepción revierte también la key recién creada
+           * y evita dejar una key huérfana.
+           */
+          throw new IllegalStateException(
+              "Stripe fulfillment already exists for subscription: "
+                  + subscriptionId
+          );
+        }
+
+        markEventCompleted(
+            eventId,
+            "COMPLETED"
+        );
+
+        return new PersistResult(
+            generatedApiKey,
+            true
+        );
+      });
+
+  if (persisted == null) {
+    throw new IllegalStateException(
+        "Stripe fulfillment transaction returned no result"
+    );
+  }
+
+  if (!persisted.created()) {
+    log.info(
+        "Stripe fulfillment already processed eventId={} subscriptionId={} apiKey={}",
+        eventId,
+        subscriptionId,
+        mask(persisted.apiKey())
+    );
+
+    return true;
+  }
+
+  /*
+   * Aquí la transacción ya terminó y la key ya es visible
+   * para otros eventos como subscription.updated.
+   */
+  String apiKey = persisted.apiKey();
+
+  try {
+    email.sendApiKey(
+        emailTo,
+        resolution.plan(),
+        apiKey
+    );
+
+    fulfillRepo.markEmailSent(
+        emailTo,
+        apiKey
+    );
+
+    log.info(
+        "Stripe fulfillment email sent to={} plan={} subscriptionId={} apiKey={}",
+        emailTo,
+        resolution.plan(),
+        subscriptionId,
+        mask(apiKey)
+    );
+  } catch (Exception e) {
+    fulfillRepo.markEmailFailed(
+        emailTo,
+        apiKey,
+        e.getMessage()
+    );
+
+    log.warn(
+        "Stripe fulfillment email failed to={} plan={} subscriptionId={} apiKey={}",
+        emailTo,
+        resolution.plan(),
+        subscriptionId,
+        mask(apiKey),
+        e
+    );
+  }
+
+  log.info(
+      "Stripe fulfillment completed eventId={} sessionId={} customerId={} subscriptionId={} productId={} priceId={} plan={} apiKey={}",
+      eventId,
+      sessionId,
+      customerId,
+      subscriptionId,
+      resolution.productId(),
+      resolution.priceId(),
+      resolution.plan(),
+      mask(apiKey)
+  );
+
+  return true;
+}
+
   public boolean processSubscriptionUpdated(
     String eventId,
     String subscriptionId
@@ -328,22 +378,35 @@ public class StripeFulfillmentService {
 
   boolean shouldRemainActive =
       isActiveSubscriptionStatus(status);
+      
+  transactionTemplate.executeWithoutResult(tx -> {
+    if (!reserveEvent(eventId)) {
+      return;
+    }
 
-  fulfillRepo.updateSubscriptionState(
-      subscriptionId,
-      status,
-      cancelAtPeriodEnd,
-      cancellationScheduled,
-      currentPeriodEnd,
-      stripeCancelAt,
-      shouldRemainActive ? null : OffsetDateTime.now(ZoneOffset.UTC)
-  );
+    fulfillRepo.updateSubscriptionState(
+        subscriptionId,
+        status,
+        cancelAtPeriodEnd,
+        cancellationScheduled,
+        currentPeriodEnd,
+        stripeCancelAt,
+        shouldRemainActive
+            ? null
+            : OffsetDateTime.now(ZoneOffset.UTC)
+    );
 
-  if (!shouldRemainActive) {
-    apiKeys.deactivate(fulfillment.get().apiKey());
-  }
+    if (!shouldRemainActive) {
+      apiKeys.deactivate(
+          fulfillment.get().apiKey()
+      );
+    }
 
-  markEventCompleted(eventId, "COMPLETED");
+    markEventCompleted(
+        eventId,
+        "COMPLETED"
+    );
+  });
 
   log.info(
       "Stripe subscription updated eventId={} subscriptionId={} status={} cancellationScheduled={} active={}",
@@ -357,7 +420,6 @@ public class StripeFulfillmentService {
     return true;
   }
 
-  @Transactional
   public boolean processSubscriptionDeleted(
     String eventId,
     String subscriptionId
@@ -401,6 +463,8 @@ public class StripeFulfillmentService {
 
   OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
 
+  transactionTemplate.executeWithoutResult(tx -> {
+
   fulfillRepo.updateSubscriptionState(
       subscriptionId,
       "canceled",
@@ -414,6 +478,7 @@ public class StripeFulfillmentService {
   apiKeys.deactivate(fulfillment.get().apiKey());
 
   markEventCompleted(eventId, "COMPLETED");
+  });
 
   log.info(
       "Stripe subscription deleted eventId={} subscriptionId={} apiKey={}",
@@ -468,7 +533,7 @@ public class StripeFulfillmentService {
     Subscription subscription =
         retrieveSubscriptionExpanded(subscriptionId);
 
-    return resolveCryptoLinkSubscription(subscriptionId);   
+    return resolveCryptoLinkSubscription(subscription);   
     } 
 
     private SubscriptionResolution resolveCryptoLinkSubscription(
@@ -695,14 +760,6 @@ public class StripeFulfillmentService {
       String subscriptionStatus
   ) {}
 
-  private static final class DuplicateSubscriptionException
-      extends RuntimeException {
-
-    private DuplicateSubscriptionException(String message) {
-      super(message);
-    }
-  }
-
   private boolean isActiveSubscriptionStatus(String status) {
     return Set.of(
       "active",
@@ -728,4 +785,8 @@ public class StripeFulfillmentService {
       markEventCompleted(eventId, status);
     }
   }
+  private record PersistResult(
+    String apiKey,
+    boolean created
+) {}
 }
