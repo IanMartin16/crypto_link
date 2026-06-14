@@ -3,6 +3,7 @@ package com.evilink.crypto_link.service;
 import com.evilink.crypto_link.persistence.ApiKeyRepository;
 import com.evilink.crypto_link.persistence.FulfillmentRepository;
 import com.stripe.Stripe;
+import com.stripe.model.Price;
 import com.stripe.model.Subscription;
 import com.stripe.model.checkout.Session;
 import org.slf4j.Logger;
@@ -12,26 +13,36 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.SecureRandom;
 import java.time.OffsetDateTime;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.Random;
+import java.util.Set;
 
 @Service
 public class StripeFulfillmentService {
 
-  private static final Logger log = LoggerFactory.getLogger(StripeFulfillmentService.class);
+  private static final Logger log =
+      LoggerFactory.getLogger(StripeFulfillmentService.class);
+
+  private static final Set<String> ALLOWED_PLANS =
+      Set.of("BUSINESS", "PRO");
 
   private final JdbcTemplate jdbc;
   private final ApiKeyRepository apiKeys;
   private final SmtpEmailService email;
   private final FulfillmentRepository fulfillRepo;
 
-  private final Random rnd = new Random();
+  private final SecureRandom secureRandom = new SecureRandom();
 
   @Value("${cryptolink.stripe.secret-key:}")
   private String stripeSecretKey;
+
+  @Value("${cryptolink.stripe.product-id:}")
+  private String cryptoLinkProductId;
 
   @Value("${cryptolink.stripe.price.business:}")
   private String priceBusiness;
@@ -52,163 +63,457 @@ public class StripeFulfillmentService {
   }
 
   @Transactional
-  public boolean processCheckoutCompleted(String eventId, String sessionId) throws Exception {
+  public boolean processCheckoutCompleted(
+      String eventId,
+      String sessionId
+  ) throws Exception {
 
     if (isBlank(eventId) || isBlank(sessionId)) {
-      log.warn("Stripe fulfillment: missing eventId/sessionId");
+      log.warn(
+          "Stripe fulfillment rejected: missing eventId/sessionId"
+      );
       return false;
     }
 
-    // 1) idempotencia por eventId
-    if (!reserveEvent(eventId)) {
-      log.info("Stripe fulfillment: duplicate event ignored eventId={}", eventId);
+    Session session = retrieveSessionExpanded(sessionId);
+
+    String subscriptionId = session.getSubscription();
+    String customerId = session.getCustomer();
+    String emailTo = normalizeEmail(extractEmail(session));
+
+    if (isBlank(subscriptionId)) {
+      log.warn(
+          "Stripe fulfillment rejected: missing subscriptionId eventId={} sessionId={}",
+          eventId,
+          sessionId
+      );
+      return false;
+    }
+
+    /*
+     * Idempotencia comercial.
+     *
+     * Una suscripción solo puede tener un fulfillment.
+     */
+    var existing =
+        fulfillRepo.findBySubscriptionId(subscriptionId);
+
+    if (existing.isPresent()) {
+      log.info(
+          "Stripe fulfillment duplicate subscription ignored eventId={} sessionId={} subscriptionId={} apiKey={}",
+          eventId,
+          sessionId,
+          subscriptionId,
+          mask(existing.get().apiKey())
+      );
+
+      markEventCompleted(eventId, "DUPLICATE_SUBSCRIPTION");
       return true;
     }
 
-    // 2) retrieve session expanded
-    Session session = retrieveSessionExpanded(sessionId);
+    SubscriptionResolution resolution =
+        resolveCryptoLinkSubscription(subscriptionId);
 
-    // 3) plan + email
-    String plan = meta(session, "plan");
-    String emailTo = extractEmail(session);
+    /*
+     * Un evento válido de Stripe puede pertenecer a Curpify,
+     * Data_Link o cualquier otro producto de la cuenta.
+     *
+     * Se ignora sin reintento porque no es un error transitorio.
+     */
+    if (resolution == null) {
+      log.info(
+          "Stripe fulfillment ignored: foreign product or price eventId={} sessionId={} subscriptionId={}",
+          eventId,
+          sessionId,
+          subscriptionId
+      );
 
-    // debug útil si vuelve a pasar
-    log.warn("Stripe fulfillment debug sessionId={} sessionMeta={} subId={}",
-        sessionId, session.getMetadata(), session.getSubscription());
-
-    // 3b) si falta plan, intenta subscription meta / infer por priceId
-    if (isBlank(plan)) {
-      String subId = session.getSubscription();
-      if (!isBlank(subId)) {
-        Subscription subBasic = Subscription.retrieve(subId);
-        String subPlan = subBasic.getMetadata() != null ? subBasic.getMetadata().get("plan") : null;
-        if (!isBlank(subPlan)) plan = subPlan;
-        if (isBlank(plan)) plan = inferPlanFromSubscription(subId);
-      }
+      markEventCompleted(eventId, "IGNORED_WRONG_PRODUCT");
+      return true;
     }
 
-    if (isBlank(plan) || isBlank(emailTo)) {
-      // si faltan datos ya reservamos eventId, pero preferible: marcar y permitir soporte manual
-      // (si quieres reintento automático, habría que NO reservar hasta tener plan/email)
-      log.warn("Stripe fulfillment: missing plan/email eventId={} sessionId={} plan={} email={}",
-          eventId, sessionId, plan, emailTo);
-      return false;
+    if (isBlank(emailTo)) {
+      log.warn(
+          "Stripe fulfillment failed: missing customer email eventId={} sessionId={} subscriptionId={}",
+          eventId,
+          sessionId,
+          subscriptionId
+      );
+
+      /*
+       * Se lanza excepción para provocar rollback y permitir
+       * que Stripe vuelva a intentar.
+       */
+      throw new IllegalStateException(
+          "Stripe fulfillment: missing customer email"
+      );
     }
 
-    plan = plan.trim().toUpperCase();
-    emailTo = emailTo.trim().toLowerCase();
+    validatePlan(resolution.plan());
 
-    // 4) generar apikey + guardar
+    /*
+     * Reservamos el evento después de validar producto, precio,
+     * suscripción y datos indispensables.
+     */
+    if (!reserveEvent(eventId)) {
+      log.info(
+          "Stripe fulfillment duplicate event ignored eventId={}",
+          eventId
+      );
+      return true;
+    }
+
     String apiKey = genKey();
-    apiKeys.insertKey(apiKey, plan, "ACTIVE", (OffsetDateTime) null);
 
-    // 5) registrar fulfillment
-    fulfillRepo.insert(emailTo, plan, apiKey, "stripe", eventId, sessionId);
+    /*
+     * Primero insertamos la key y después el fulfillment dentro
+     * de la misma transacción. Cualquier error provoca rollback.
+     */
+    int insertedKey = apiKeys.insertKey(
+        apiKey,
+        resolution.plan(),
+        "ACTIVE",
+        (OffsetDateTime) null
+    );
 
-    // 6) email best-effort
-    try {
-      email.sendApiKey(emailTo, plan, apiKey);        // aquí ya estás con Resend por debajo 👍
-      fulfillRepo.markEmailSent(emailTo, apiKey);
-      log.info("Stripe fulfillment: email sent to={} plan={} apiKey={}", emailTo, plan, mask(apiKey));
-    } catch (Exception e) {
-      fulfillRepo.markEmailFailed(emailTo, apiKey, e.getMessage());
-      log.warn("Stripe fulfillment: email failed to={} plan={} apiKey={}", emailTo, plan, mask(apiKey), e);
-      // NO tumbamos el proceso: DB ya quedó bien
+    if (insertedKey != 1) {
+      throw new IllegalStateException(
+        "Stripe fulfillment: API key could not be inserted"
+      );
     }
 
-    log.info("Stripe fulfillment: completed eventId={} sessionId={} plan={} apiKey={}",
-        eventId, sessionId, plan, mask(apiKey));
+    boolean fulfillmentInserted = fulfillRepo.insertIfAbsent(
+        emailTo,
+        resolution.plan(),
+        apiKey,
+        "stripe",
+        eventId,
+        sessionId,
+        customerId,
+        subscriptionId,
+        resolution.priceId(),
+        resolution.productId(),
+        resolution.subscriptionStatus()
+    );
+
+    if (!fulfillmentInserted) {
+      /*
+       * La suscripción fue insertada concurrentemente.
+       * Al lanzar excepción también hacemos rollback de la key
+       * recién creada, evitando una key huérfana.
+       */
+      throw new IllegalStateException(
+          "Stripe fulfillment already exists for subscription: " + subscriptionId
+      );
+    }
+
+    try {
+      email.sendApiKey(
+          emailTo,
+          resolution.plan(),
+          apiKey
+      );
+
+      fulfillRepo.markEmailSent(emailTo, apiKey);
+
+      log.info(
+          "Stripe fulfillment email sent to={} plan={} subscriptionId={} apiKey={}",
+          emailTo,
+          resolution.plan(),
+          subscriptionId,
+          mask(apiKey)
+      );
+    } catch (Exception e) {
+      fulfillRepo.markEmailFailed(
+          emailTo,
+          apiKey,
+          e.getMessage()
+      );
+
+      log.warn(
+          "Stripe fulfillment email failed to={} plan={} subscriptionId={} apiKey={}",
+          emailTo,
+          resolution.plan(),
+          subscriptionId,
+          mask(apiKey),
+          e
+      );
+    }
+
+    markEventCompleted(eventId, "COMPLETED");
+
+    log.info(
+        "Stripe fulfillment completed eventId={} sessionId={} customerId={} subscriptionId={} productId={} priceId={} plan={} apiKey={}",
+        eventId,
+        sessionId,
+        customerId,
+        subscriptionId,
+        resolution.productId(),
+        resolution.priceId(),
+        resolution.plan(),
+        mask(apiKey)
+    );
 
     return true;
   }
 
-  private Session retrieveSessionExpanded(String sessionId) throws Exception {
-    ensureStripeKey();
+  private Session retrieveSessionExpanded(
+      String sessionId
+  ) throws Exception {
+    ensureStripeConfiguration();
+
     Stripe.apiKey = stripeSecretKey;
 
-    Map<String, Object> params = new java.util.HashMap<>();
-    params.put("expand", List.of("customer", "subscription"));
+    Map<String, Object> params = new HashMap<>();
+    params.put(
+        "expand",
+        List.of("customer", "subscription")
+    );
 
     return Session.retrieve(sessionId, params, null);
   }
 
-  private String inferPlanFromSubscription(String subId) throws Exception {
-    if (isBlank(subId)) return null;
+  private SubscriptionResolution resolveCryptoLinkSubscription(
+      String subscriptionId
+  ) throws Exception {
+    ensureStripeConfiguration();
 
-    ensureStripeKey();
     Stripe.apiKey = stripeSecretKey;
 
-    Map<String, Object> params = new java.util.HashMap<>();
-    params.put("expand", List.of("items.data.price"));
-    Subscription sub = Subscription.retrieve(subId, params, null);
+    Map<String, Object> params = new HashMap<>();
+    params.put(
+        "expand",
+        List.of("items.data.price.product")
+    );
 
-    String priceId = null;
-    if (sub.getItems() != null && sub.getItems().getData() != null && !sub.getItems().getData().isEmpty()) {
-      var item0 = sub.getItems().getData().get(0);
-      if (item0.getPrice() != null) priceId = item0.getPrice().getId();
+    Subscription subscription =
+        Subscription.retrieve(subscriptionId, params, null);
+
+    if (subscription.getItems() == null
+        || subscription.getItems().getData() == null
+        || subscription.getItems().getData().isEmpty()) {
+      throw new IllegalStateException(
+          "Stripe fulfillment: subscription has no items"
+      );
     }
 
-    if (isBlank(priceId)) {
-      log.warn("Stripe fulfillment: could not infer plan (no priceId) subId={}", subId);
+    if (subscription.getItems().getData().size() != 1) {
+      throw new IllegalStateException(
+          "Stripe fulfillment: expected exactly one subscription item"
+      );
+    }
+
+    var item = subscription.getItems().getData().get(0);
+    Price price = item.getPrice();
+
+    if (price == null || isBlank(price.getId())) {
+      throw new IllegalStateException(
+          "Stripe fulfillment: subscription item has no price"
+      );
+    }
+
+    String priceId = price.getId();
+    String productId = extractProductId(price);
+
+    if (isBlank(productId)) {
+      throw new IllegalStateException(
+          "Stripe fulfillment: subscription item has no productId"
+      );
+    }
+
+    if (!cryptoLinkProductId.equals(productId)) {
+      log.info(
+          "Stripe subscription does not belong to CryptoLink subscriptionId={} productId={} priceId={}",
+          subscriptionId,
+          productId,
+          priceId
+      );
+
       return null;
     }
 
-    if (!isBlank(pricePro) && pricePro.equals(priceId)) return "PRO";
-    if (!isBlank(priceBusiness) && priceBusiness.equals(priceId)) return "BUSINESS";
+    final String plan;
 
-    log.warn("Stripe fulfillment: unknown priceId={} (expected pro={} business={})",
-        priceId, pricePro, priceBusiness);
+    if (priceBusiness.equals(priceId)) {
+      plan = "BUSINESS";
+    } else if (pricePro.equals(priceId)) {
+      plan = "PRO";
+    } else {
+      log.warn(
+          "Stripe subscription rejected: CryptoLink product with unknown price subscriptionId={} productId={} priceId={}",
+          subscriptionId,
+          productId,
+          priceId
+      );
 
-    return null;
+      return null;
+    }
+
+    return new SubscriptionResolution(
+        plan,
+        priceId,
+        productId,
+        subscription.getStatus()
+    );
   }
 
-  private String extractEmail(Session s) {
-    if (s == null) return null;
+  private String extractProductId(Price price) {
+    if (price == null) return null;
 
-    if (s.getCustomerDetails() != null && s.getCustomerDetails().getEmail() != null) {
-      return s.getCustomerDetails().getEmail();
+    if (price.getProductObject() != null) {
+      return price.getProductObject().getId();
     }
-    if (s.getCustomerEmail() != null) {
-      return s.getCustomerEmail();
-    }
-    return meta(s, "email");
+
+    return price.getProduct();
   }
 
-  private void ensureStripeKey() {
-    if (stripeSecretKey == null || stripeSecretKey.isBlank()) {
-      throw new IllegalStateException("Stripe fulfillment: missing cryptolink.stripe.secret-key (sk_...)");
+  private String extractEmail(Session session) {
+    if (session == null) return null;
+
+    if (session.getCustomerDetails() != null
+        && !isBlank(session.getCustomerDetails().getEmail())) {
+      return session.getCustomerDetails().getEmail();
     }
+
+    if (!isBlank(session.getCustomerEmail())) {
+      return session.getCustomerEmail();
+    }
+
+    return meta(session, "email");
+  }
+
+  private String normalizeEmail(String email) {
+    return isBlank(email)
+        ? null
+        : email.trim().toLowerCase(Locale.ROOT);
+  }
+
+  private void validatePlan(String plan) {
+    if (!ALLOWED_PLANS.contains(plan)) {
+      throw new IllegalArgumentException(
+          "Unsupported CryptoLink plan: " + plan
+      );
+    }
+  }
+
+  private void ensureStripeConfiguration() {
+    if (isBlank(stripeSecretKey)) {
+      throw new IllegalStateException(
+          "Stripe fulfillment: missing cryptolink.stripe.secret-key"
+      );
+    }
+
     if (!stripeSecretKey.startsWith("sk_")) {
-      throw new IllegalStateException("Stripe fulfillment: secret-key must start with sk_...");
+      throw new IllegalStateException(
+          "Stripe fulfillment: secret key must start with sk_"
+      );
+    }
+
+    if (isBlank(cryptoLinkProductId)
+        || !cryptoLinkProductId.startsWith("prod_")) {
+      throw new IllegalStateException(
+          "Stripe fulfillment: invalid cryptolink.stripe.product-id"
+      );
+    }
+
+    if (isBlank(priceBusiness)
+        || !priceBusiness.startsWith("price_")) {
+      throw new IllegalStateException(
+          "Stripe fulfillment: invalid business price"
+      );
+    }
+
+    if (isBlank(pricePro)
+        || !pricePro.startsWith("price_")) {
+      throw new IllegalStateException(
+          "Stripe fulfillment: invalid pro price"
+      );
+    }
+
+    if (priceBusiness.equals(pricePro)) {
+      throw new IllegalStateException(
+          "Stripe fulfillment: business and pro prices cannot be equal"
+      );
     }
   }
 
   private boolean reserveEvent(String eventId) {
     int rows = jdbc.update("""
-      insert into cryptolink_stripe_events(event_id) values (?)
+      insert into cryptolink_stripe_events(
+        event_id,
+        status
+      )
+      values (?, 'PROCESSING')
       on conflict (event_id) do nothing
-    """, eventId);
+      """,
+      eventId
+    );
+
     return rows == 1;
   }
 
+  private void markEventCompleted(
+      String eventId,
+      String status
+  ) {
+    jdbc.update("""
+      update cryptolink_stripe_events
+      set
+        status = ?,
+        processed_at = now()
+      where event_id = ?
+      """,
+      status,
+      eventId
+    );
+  }
+
   private String genKey() {
-    byte[] b = new byte[24];
-    rnd.nextBytes(b);
-    return "cl_" + Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+    byte[] bytes = new byte[24];
+    secureRandom.nextBytes(bytes);
+
+    return "cl_" +
+        Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(bytes);
   }
 
-  private String mask(String k) {
-    if (k == null) return "";
-    if (k.length() <= 10) return "***";
-    return k.substring(0, 4) + "..." + k.substring(k.length() - 4);
+  private String mask(String apiKey) {
+    if (apiKey == null) return "";
+    if (apiKey.length() <= 10) return "***";
+
+    return apiKey.substring(0, 4)
+        + "..."
+        + apiKey.substring(apiKey.length() - 4);
   }
 
-  private static boolean isBlank(String s) {
-    return s == null || s.isBlank();
+  private static boolean isBlank(String value) {
+    return value == null || value.isBlank();
   }
 
-  private static String meta(Session s, String key) {
-    if (s == null || s.getMetadata() == null) return null;
-    return s.getMetadata().get(key);
+  private static String meta(
+      Session session,
+      String key
+  ) {
+    if (session == null || session.getMetadata() == null) {
+      return null;
+    }
+
+    return session.getMetadata().get(key);
+  }
+
+  private record SubscriptionResolution(
+      String plan,
+      String priceId,
+      String productId,
+      String subscriptionStatus
+  ) {}
+
+  private static final class DuplicateSubscriptionException
+      extends RuntimeException {
+
+    private DuplicateSubscriptionException(String message) {
+      super(message);
+    }
   }
 }
