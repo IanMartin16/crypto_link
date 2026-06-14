@@ -263,4 +263,54 @@ public class FulfillmentRepository {
         subscriptionId
     );
   }
+
+  public Optional<StripeCustomerRow> findActiveStripeCustomerByApiKey(
+      String apiKey
+  ) {
+    return jdbc.query("""
+      select
+        f.customer_id,
+        f.subscription_id,
+        f.subscription_status,
+        f.plan,
+        f.cancellation_scheduled,
+        f.current_period_end
+      from cryptolink_fulfillments f
+      join cryptolink_api_keys k
+        on k.api_key = f.api_key
+      where f.api_key = ?
+        and f.source = 'stripe'
+        and k.status = 'ACTIVE'
+        and f.revoked_at is null
+        and f.customer_id is not null
+      order by f.created_at desc
+      limit 1
+      """,
+      rs -> rs.next()
+          ? Optional.of(
+              new StripeCustomerRow(
+                  rs.getString("customer_id"),
+                  rs.getString("subscription_id"),
+                  rs.getString("subscription_status"),
+                  rs.getString("plan"),
+                  rs.getBoolean("cancellation_scheduled"),
+                  rs.getObject(
+                      "current_period_end",
+                      OffsetDateTime.class
+                  )
+              )
+          )
+          : Optional.empty(),
+      apiKey
+  );
+}
+
+  public record StripeCustomerRow(
+    String customerId,
+    String subscriptionId,
+    String subscriptionStatus,
+    String plan,
+    boolean cancellationScheduled,
+    OffsetDateTime currentPeriodEnd
+  ) {}
 }
