@@ -24,6 +24,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 
 @Service
 public class StripeFulfillmentService {
@@ -313,112 +316,152 @@ public class StripeFulfillmentService {
   public boolean processSubscriptionUpdated(
     String eventId,
     String subscriptionId
-  ) throws Exception {
+) throws Exception {
 
-    if (isBlank(eventId) || isBlank(subscriptionId)) {
-      log.warn(
-          "Stripe subscription update rejected: missing eventId/subscriptionId"
-      );
-      return false;
-    }
+  if (isBlank(eventId) || isBlank(subscriptionId)) {
+    log.warn(
+        "Stripe subscription update rejected: missing eventId/subscriptionId"
+    );
+    return false;
+  }
 
   /*
-   * Recuperamos directamente desde Stripe para no confiar solamente
-   * en los datos parciales del webhook.
+   * Stripe se consulta fuera de la transacción JDBC.
    */
-    Subscription subscription =
+  Subscription subscription =
       retrieveSubscriptionExpanded(subscriptionId);
 
-    SubscriptionResolution resolution =
+  SubscriptionResolution resolution =
       resolveCryptoLinkSubscription(subscription);
 
-    if (resolution == null) {
-      recordIgnoredEvent(eventId, "IGNORED_WRONG_PRODUCT");
-      return true;
-    }
+  if (resolution == null) {
+    transactionTemplate.executeWithoutResult(tx -> {
+      if (reserveEvent(eventId)) {
+        markEventCompleted(
+            eventId,
+            "IGNORED_WRONG_PRODUCT"
+        );
+      }
+    });
 
-    var fulfillment =
+    return true;
+  }
+
+  var fulfillment =
       fulfillRepo.findBySubscriptionId(subscriptionId);
 
-    if (fulfillment.isEmpty()) {
-    /*
-     * Puede ocurrir si llega updated antes de que checkout termine
-     * de persistirse. Lanzamos error para que Stripe reintente.
-     */
+  if (fulfillment.isEmpty()) {
     throw new IllegalStateException(
-        "No fulfillment found for subscription " + subscriptionId
-      );
-    }
+        "No fulfillment found for subscription "
+            + subscriptionId
+    );
+  }
 
-    if (!reserveEvent(eventId)) {
-      log.info(
-        "Stripe subscription update duplicate ignored eventId={}",
-        eventId
-      );
-      return true;
-    }
-
-  String status = subscription.getStatus();
+  String subscriptionStatus =
+      subscription.getStatus();
 
   boolean cancelAtPeriodEnd =
-      Boolean.TRUE.equals(subscription.getCancelAtPeriodEnd());
+      Boolean.TRUE.equals(
+          subscription.getCancelAtPeriodEnd()
+      );
 
   OffsetDateTime stripeCancelAt =
       fromEpoch(subscription.getCancelAt());
 
   OffsetDateTime currentPeriodEnd =
-      fromEpoch(subscription.getCurrentPeriodEnd());
+      resolveCurrentPeriodEnd(subscription);
 
   /*
-   * Stripe puede enviar cancel_at aunque cancel_at_period_end
-   * permanezca false.
+   * En tu versión de Stripe puede llegar cancel_at con
+   * cancel_at_period_end=false.
    */
   boolean cancellationScheduled =
       cancelAtPeriodEnd || stripeCancelAt != null;
 
   boolean shouldRemainActive =
-      isActiveSubscriptionStatus(status);
-      
-  transactionTemplate.executeWithoutResult(tx -> {
-    if (!reserveEvent(eventId)) {
-      return;
-    }
-
-    fulfillRepo.updateSubscriptionState(
-        subscriptionId,
-        status,
-        cancelAtPeriodEnd,
-        cancellationScheduled,
-        currentPeriodEnd,
-        stripeCancelAt,
-        shouldRemainActive
-            ? null
-            : OffsetDateTime.now(ZoneOffset.UTC)
-    );
-
-    if (!shouldRemainActive) {
-      apiKeys.deactivate(
-          fulfillment.get().apiKey()
+      isActiveSubscriptionStatus(
+          subscriptionStatus
       );
-    }
 
-    markEventCompleted(
+  Boolean processed =
+      transactionTemplate.execute(tx -> {
+
+        /*
+         * Única reserva del evento.
+         */
+        if (!reserveEvent(eventId)) {
+          return false;
+        }
+
+        int updated =
+            fulfillRepo.updateSubscriptionState(
+                subscriptionId,
+                subscriptionStatus,
+                cancelAtPeriodEnd,
+                cancellationScheduled,
+                currentPeriodEnd,
+                stripeCancelAt,
+                shouldRemainActive
+                    ? null
+                    : OffsetDateTime.now(
+                        ZoneOffset.UTC
+                    )
+            );
+
+        if (updated != 1) {
+          throw new IllegalStateException(
+              "Subscription state update affected "
+                  + updated
+                  + " rows for "
+                  + subscriptionId
+          );
+        }
+
+        if (!shouldRemainActive) {
+          int deactivated =
+              apiKeys.deactivate(
+                  fulfillment.get().apiKey()
+              );
+
+          log.info(
+              "Stripe API key deactivation subscriptionId={} affectedRows={}",
+              subscriptionId,
+              deactivated
+          );
+        }
+
+        markEventCompleted(
+            eventId,
+            "COMPLETED"
+        );
+
+        return true;
+      });
+
+  if (!Boolean.TRUE.equals(processed)) {
+    log.info(
+        "Stripe subscription update duplicate ignored eventId={} subscriptionId={}",
         eventId,
-        "COMPLETED"
+        subscriptionId
     );
-  });
+
+    return true;
+  }
 
   log.info(
-      "Stripe subscription updated eventId={} subscriptionId={} status={} cancellationScheduled={} active={}",
+      "Stripe subscription updated eventId={} subscriptionId={} status={} cancelAtPeriodEnd={} stripeCancelAt={} currentPeriodEnd={} cancellationScheduled={} active={}",
       eventId,
       subscriptionId,
-      status,
+      subscriptionStatus,
+      cancelAtPeriodEnd,
+      stripeCancelAt,
+      currentPeriodEnd,
       cancellationScheduled,
       shouldRemainActive
   );
 
-    return true;
-  }
+  return true;
+}
 
   public boolean processSubscriptionDeleted(
     String eventId,
@@ -788,5 +831,78 @@ public class StripeFulfillmentService {
   private record PersistResult(
     String apiKey,
     boolean created
-) {}
+  ) {}
+
+  private OffsetDateTime resolveCurrentPeriodEnd(
+      Subscription subscription
+  ) {
+    if (subscription == null) {
+      return null;
+    }
+
+    /*
+     * Compatibilidad con versiones anteriores de Stripe API,
+     * donde current_period_end estaba en Subscription.
+     */
+    Long subscriptionPeriodEnd =
+      subscription.getCurrentPeriodEnd();
+
+  if (subscriptionPeriodEnd != null) {
+    return fromEpoch(subscriptionPeriodEnd);
+  }
+
+  /*
+   * En API Basil/Clover, current_period_end vive dentro de
+   * items.data[]. Algunas versiones de stripe-java todavía
+   * no exponen SubscriptionItem#getCurrentPeriodEnd().
+   */
+  try {
+    JsonObject raw = subscription.getRawJsonObject();
+
+    if (raw == null) {
+      return null;
+    }
+
+    JsonObject items = raw.getAsJsonObject("items");
+
+    if (items == null) {
+      return null;
+    }
+
+    JsonArray data = items.getAsJsonArray("data");
+
+    if (data == null || data.isEmpty()) {
+      return null;
+    }
+
+    JsonElement firstElement = data.get(0);
+
+    if (firstElement == null
+        || !firstElement.isJsonObject()) {
+      return null;
+    }
+
+    JsonObject firstItem =
+        firstElement.getAsJsonObject();
+
+    JsonElement periodEnd =
+        firstItem.get("current_period_end");
+
+    if (periodEnd == null
+        || periodEnd.isJsonNull()) {
+      return null;
+    }
+
+    return fromEpoch(periodEnd.getAsLong());
+
+  } catch (Exception e) {
+    log.warn(
+        "Stripe subscription current_period_end could not be resolved subscriptionId={}",
+        subscription.getId(),
+        e
+    );
+
+      return null;
+    }
+  }
 }
