@@ -42,8 +42,8 @@ public class RiskFlagService {
             flags.add(new RiskFlag(
                 "low_confidence_regime",
                 "medium",
-                "Confianza baja en el régimen",
-                "El régimen actual no muestra suficiente convicción estadística."
+                "Low confidence in the regime",
+                "The current regime does not show sufficient statistical conviction."
             ));
         }
 
@@ -56,8 +56,8 @@ public class RiskFlagService {
             flags.add(new RiskFlag(
                 "insufficient_history",
                 "medium",
-                "Histórico insuficiente",
-                "Algunos activos aún no tienen suficiente historial para análisis confiable."
+                "Insufficient historical data",
+                "Some assets do not yet have enough history for reliable analysis."
             ));
         }
 
@@ -75,8 +75,8 @@ public class RiskFlagService {
             flags.add(new RiskFlag(
                 "weak_momentum",
                 "low",
-                "Momentum débil",
-                "Los activos monitoreados muestran fuerza limitada."
+                "Weak momentum",
+                "The monitored assets show limited strength.."
             ));
         }
 
@@ -89,8 +89,8 @@ public class RiskFlagService {
             flags.add(new RiskFlag(
                 "flat_market",
                 "low",
-                "Mercado sin dirección clara",
-                "La mayoría de las señales de tendencia permanecen estables."
+                "Market without clear direction",
+                "Most trend signals remain stable."
             ));
         }
 
@@ -100,8 +100,8 @@ public class RiskFlagService {
             flags.add(new RiskFlag(
                 "no_clear_movers",
                 "low",
-                "Sin movers claros",
-                "No se observan movimientos relativos suficientemente marcados."
+                "Without clear moves",
+                "No sufficiently marked relative movements are observed."
             ));
         }
 
@@ -129,14 +129,14 @@ public class RiskFlagService {
             flags.add(new RiskFlag(
                 "mixed_signals",
                 "medium",
-                "Señales mixtas",
-                "Existen discrepancias entre tendencia y momentum en algunos activos."
+                "Mixed signals",
+                "There are discrepancies between trend and momentum in some assets."
             ));
         }
 
         String summary = flags.isEmpty()
-            ? "No se detectan alertas relevantes por ahora."
-            : "Predominan señales débiles, mixtas o poco concluyentes.";
+            ? "No relevant alerts have been detected at this time.."
+            : "Weak, mixed, or inconclusive signals predominate.";
 
         return new RiskFlagsResult(flags, summary);
     }

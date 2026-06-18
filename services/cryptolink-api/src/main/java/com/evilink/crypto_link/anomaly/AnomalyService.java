@@ -27,7 +27,7 @@ public class AnomalyService {
         if (usable.isEmpty()) {
             return new AnomalyResult(
                 List.of(),
-                "No hay suficiente histórico para evaluar anomalías."
+                "There is not enough historical data to assess anomalies."
             );
         }
 
@@ -68,8 +68,8 @@ public class AnomalyService {
                 }
 
                 String detail = unusualMomentum
-                    ? m.symbol() + " muestra un momentum significativamente superior al resto del grupo."
-                    : m.symbol() + " muestra una variación significativamente superior al resto del grupo.";
+                    ? m.symbol() + " shows a significantly higher momentum than the rest of the group."
+                    : m.symbol() + " shows a significantly higher variation than the rest of the group.";
 
                 anomalies.add(new AnomalyRow(
                     m.symbol(),
@@ -82,8 +82,8 @@ public class AnomalyService {
         }
 
         String summary = anomalies.isEmpty()
-            ? "No se detectan anomalías relevantes por ahora."
-            : "Se detectaron movimientos o señales fuera del patrón reciente.";
+            ? "No relevant anomalies have been detected so far."
+            : "Movements or signals outside the recent pattern were detected.";
 
         return new AnomalyResult(anomalies, summary);
     }
