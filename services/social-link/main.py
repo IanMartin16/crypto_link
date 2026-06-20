@@ -32,7 +32,7 @@ def trends(symbols: str = Query(default="BTC,ETH")):
 async def basic_signals(
     window: str = Query(default="1h"),
     assets: str | None = Query(default=None),
-    limit: int = Query(default=3),
+    limit: int = Query(default=10),
 ):
     asset_list = [s.strip().upper() for s in assets.split(",")] if assets else None
     result = await get_basic_signals(window=window, assets=asset_list, limit=limit)
