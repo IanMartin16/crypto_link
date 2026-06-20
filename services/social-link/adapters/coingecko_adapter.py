@@ -1,3 +1,4 @@
+from models.symbols import SymbolMarket
 from models.basic_signals import (
     SocialAttentionItem,
     BasicSignalsMarket,
@@ -150,3 +151,53 @@ def map_trending_to_basic_signals(trending: dict, window: str = "1h", ts: str = 
             coverage=coverage,
         ),
     )
+
+
+def _f(v) -> float | None:
+    """float seguro: None si no es numérico."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    return None
+
+
+def _i(v) -> int | None:
+    if isinstance(v, int):
+        return v
+    return None
+
+
+def map_markets_to_symbols(markets: list[dict]) -> list[SymbolMarket]:
+    """Reduce la respuesta cruda de /coins/markets a los campos de oro.
+
+    Descarta: roi, atl*, market_cap_change*, last_updated, fully_diluted_valuation.
+    Mapea por símbolo (uppercase) para que calce con el portal.
+    """
+    out: list[SymbolMarket] = []
+
+    for m in markets or []:
+        sym = (m.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+
+        out.append(
+            SymbolMarket(
+                symbol=sym,
+                name=m.get("name"),
+                image=m.get("image"),
+                rank=_i(m.get("market_cap_rank")),
+                price=_f(m.get("current_price")),
+                change24h=_f(m.get("price_change_percentage_24h")),
+                high24h=_f(m.get("high_24h")),
+                low24h=_f(m.get("low_24h")),
+                marketCap=_f(m.get("market_cap")),
+                volume24h=_f(m.get("total_volume")),
+                circulatingSupply=_f(m.get("circulating_supply")),
+                totalSupply=_f(m.get("total_supply")),
+                maxSupply=_f(m.get("max_supply")),
+                ath=_f(m.get("ath")),
+                athChangePct=_f(m.get("ath_change_percentage")),
+                athDate=m.get("ath_date"),
+            )
+        )
+
+    return out
