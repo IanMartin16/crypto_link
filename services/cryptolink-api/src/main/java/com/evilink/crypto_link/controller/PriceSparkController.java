@@ -25,7 +25,7 @@ public class PriceSparkController {
     @GetMapping("/prices/spark")
     public ResponseEntity<?> getPriceSpark(
         @RequestParam String symbols,
-        @RequestParam(defaultValue = "MXN") String fiat
+        @RequestParam(defaultValue = "USD") String fiat
     ) {
         List<String> list = Arrays.stream(symbols.split(","))
             .map(String::trim)

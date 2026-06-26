@@ -24,7 +24,7 @@ public class MomentumController {
     @GetMapping("/momentum")
     public ResponseEntity<?> getMomentum(
         @RequestParam String symbols,
-        @RequestParam(defaultValue = "MXN") String fiat
+        @RequestParam(defaultValue = "USD") String fiat
     ) {
         List<String> list = Arrays.stream(symbols.split(","))
             .map(String::trim)
