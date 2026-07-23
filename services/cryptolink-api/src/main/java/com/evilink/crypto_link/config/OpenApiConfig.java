@@ -11,7 +11,7 @@ import org.springframework.context.annotation.Configuration;
 @OpenAPIDefinition(
   info = @Info(
     title = "CryptoLink API",
-    version = "v1",
+    version = "v2",
     description = "API de cotizaciones crypto con planes, rate limit y SSE."
   )
 )

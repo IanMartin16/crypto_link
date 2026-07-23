@@ -1,0 +1,25 @@
+insert into cryptolink_symbols (symbol, coingecko_id, active)
+values ('ZEC', 'zcash', true),
+       ('USDS', 'usds', true),
+       ('USD1', 'usd1-wlfi', true),
+       ('GRAM', 'the-open-network', true),
+       ('QNT', 'quant-network', true),
+       ('XAUT', 'tether-gold', true),
+       ('M', 'memecore', true),
+       ('DEXE', 'dexe', true),
+       ('ASTER', 'aster-2', true),
+       ('ONDO', 'ondo-finance', true),
+       ('RLUSD', 'ripple-usd', true),
+       ('USDD', 'usdd', true),
+       ('WLD', 'worldcoin-wld', true),
+       ('BGB', 'bitget-token', true),
+       ('ETC', 'ethereum-classic', true),
+       ('MORPHO', 'morpho', true),
+       ('U', 'united-stables', true),
+       ('KCS', 'kucoin-shares', true),
+       ('BEAT', 'audiera', true),
+       ('KAS', 'kaspa', true),
+       ('STABLE', 'stable-2', true)
+on conflict (symbol) do update
+set coingecko_id = excluded.coingecko_id,
+    active      = excluded.active;
