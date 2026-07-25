@@ -32,6 +32,8 @@ public class PriceController {
                     "symbol", symbol.toUpperCase(),
                     "fiat", r.fiat,
                     "price", r.prices.get(symbol.toUpperCase()),
+                    "change24h", r.change24h.get(symbol.toUpperCase()),
+                    "marketCap", r.marketCap.get(symbol.toUpperCase()),
                     "ts", r.ts,
                     "source", r.source
             );

@@ -2,6 +2,7 @@ package com.evilink.crypto_link.service;
 
 import com.evilink.crypto_link.metrics.ApiMetrics;
 import com.evilink.crypto_link.history.PriceHistoryCache;
+import com.evilink.crypto_link.service.CoinGeckoPriceProvider.PricePoint;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,11 +21,8 @@ public class PriceService {
     private final PriceHistoryCache historyCache;
     private static final Logger log = LoggerFactory.getLogger(PriceService.class);
 
-    // HARDENING: la fuente (CoinGecko keyless) actualiza ~cada 60s. Pedir cada 3s
-    // traía el MISMO dato 20 veces/min -> 429, stale-cache, latencia, y puntos
-    // duplicados en el historial (derivados planos). TTL alineado por debajo de
-    // 60s (con margen) para capturar cada update sin sobre-pedir.
-    private final long ttlMs = 50_000; // 50 segundos (antes 3s)
+    // HARDENING previo (se mantiene): fuente actualiza ~60s -> TTL 50s.
+    private final long ttlMs = 50_000;
 
     public PriceService(CoinGeckoPriceProvider provider, PriceCache cache, ApiMetrics metrics, PriceHistoryCache historyCache) {
         this.provider = provider;
@@ -46,48 +44,61 @@ public class PriceService {
         long now = System.currentTimeMillis();
         PriceCache.Entry entry = cache.get(key);
 
-        // 1) cache fresco -> NO se registra en historyCache (evita puntos duplicados:
-        //    el precio no cambió desde que se guardó). Solo sirve el dato.
+        // 1) cache fresco -> sirve, NO registra en historial (evita duplicados)
         if (entry != null && entry.isFresh(now)) {
-            return Result.from(entry.prices, fiat, "cache", entry.fetchedAtEpochMs);
+            return Result.from(entry.points, fiat, "cache", entry.fetchedAtEpochMs);
         }
 
-        // 2) proveedor -> dato NUEVO real -> AQUÍ sí se registra en el historial.
-        //    Un punto por cada cambio real (~cada 50-60s) = derivados limpios.
+        // 2) proveedor -> dato NUEVO real (precio + 24h + marketCap en 1 llamada)
         try {
-            Map<String, BigDecimal> fresh = provider.getPrices(Arrays.asList(symbolsCsv.split(",")), fiat);
+            Map<String, PricePoint> fresh = provider.getPricesRich(Arrays.asList(symbolsCsv.split(",")), fiat);
             cache.put(key, fresh, ttlMs);
-            fresh.forEach((symbol, value) -> historyCache.add(fiat, symbol, value));
+            // HARDENING intacto: el historial recibe SOLO el precio (los derivados
+            // usan precio, no 24h). Un punto por cambio real.
+            fresh.forEach((symbol, p) -> historyCache.add(fiat, symbol, p.price));
             return Result.from(fresh, fiat, "coingecko", System.currentTimeMillis());
         } catch (Exception e) {
             metrics.incUpstreamError("coingecko");
             log.warn("Upstream error provider=coingecko fiat={} symbols={}", fiat, symbolsCsv, e);
-            // 3) proveedor falla + hay cache viejo -> stale. Tampoco registra en
-            //    historial (no es dato nuevo, evita ensuciar la serie).
+            // 3) proveedor falla + cache viejo -> stale, sin registrar historial
             if (entry != null) {
-                return Result.from(entry.prices, fiat, "stale-cache", entry.fetchedAtEpochMs);
+                return Result.from(entry.points, fiat, "stale-cache", entry.fetchedAtEpochMs);
             }
-            // 4) nada que servir -> truena (502 en controller)
             throw e;
         }
     }
 
     public static class Result {
-        public final Map<String, BigDecimal> prices;
+        public final Map<String, BigDecimal> prices;      // COMPAT: solo precio
+        public final Map<String, BigDecimal> change24h;   // NUEVO
+        public final Map<String, BigDecimal> marketCap;   // NUEVO
         public final String fiat;
         public final String source;
         public final String ts;
 
-        private Result(Map<String, BigDecimal> prices, String fiat, String source, String ts) {
+        private Result(Map<String, BigDecimal> prices,
+                       Map<String, BigDecimal> change24h,
+                       Map<String, BigDecimal> marketCap,
+                       String fiat, String source, String ts) {
             this.prices = prices;
+            this.change24h = change24h;
+            this.marketCap = marketCap;
             this.fiat = fiat;
             this.source = source;
             this.ts = ts;
         }
 
-        static Result from(Map<String, BigDecimal> prices, String fiat, String source, long fetchedAtMs) {
+        static Result from(Map<String, PricePoint> points, String fiat, String source, long fetchedAtMs) {
+            Map<String, BigDecimal> prices = new LinkedHashMap<>();
+            Map<String, BigDecimal> change24h = new LinkedHashMap<>();
+            Map<String, BigDecimal> marketCap = new LinkedHashMap<>();
+            points.forEach((sym, p) -> {
+                prices.put(sym, p.price);
+                if (p.change24h != null) change24h.put(sym, p.change24h);
+                if (p.marketCap != null) marketCap.put(sym, p.marketCap);
+            });
             String ts = OffsetDateTime.now().toString();
-            return new Result(prices, fiat.toUpperCase(), source, ts);
+            return new Result(prices, change24h, marketCap, fiat.toUpperCase(), source, ts);
         }
     }
 }

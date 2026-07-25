@@ -69,7 +69,9 @@ public class PricesController {
         "fiat", r.fiat,
         "ts", r.ts,
         "source", r.source,
-        "prices", r.prices
+        "prices", r.prices,
+        "change24h", r.change24h,
+        "marketCap", r.marketCap
     );
   }
 }
