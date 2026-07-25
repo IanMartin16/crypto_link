@@ -20,8 +20,11 @@ public class PriceService {
     private final PriceHistoryCache historyCache;
     private static final Logger log = LoggerFactory.getLogger(PriceService.class);
 
-    // TTL corto para MVP (evita pegarle demasiado a CoinGecko)
-    private final long ttlMs = 3000; // 3 segundos
+    // HARDENING: la fuente (CoinGecko keyless) actualiza ~cada 60s. Pedir cada 3s
+    // traía el MISMO dato 20 veces/min -> 429, stale-cache, latencia, y puntos
+    // duplicados en el historial (derivados planos). TTL alineado por debajo de
+    // 60s (con margen) para capturar cada update sin sobre-pedir.
+    private final long ttlMs = 50_000; // 50 segundos (antes 3s)
 
     public PriceService(CoinGeckoPriceProvider provider, PriceCache cache, ApiMetrics metrics, PriceHistoryCache historyCache) {
         this.provider = provider;
@@ -43,13 +46,14 @@ public class PriceService {
         long now = System.currentTimeMillis();
         PriceCache.Entry entry = cache.get(key);
 
-        // 1) si hay cache fresco, regresa cache
+        // 1) cache fresco -> NO se registra en historyCache (evita puntos duplicados:
+        //    el precio no cambió desde que se guardó). Solo sirve el dato.
         if (entry != null && entry.isFresh(now)) {
-            entry.prices.forEach((symbol, value) -> historyCache.add(fiat, symbol, value));
             return Result.from(entry.prices, fiat, "cache", entry.fetchedAtEpochMs);
         }
 
-        // 2) si no, intenta proveedor
+        // 2) proveedor -> dato NUEVO real -> AQUÍ sí se registra en el historial.
+        //    Un punto por cada cambio real (~cada 50-60s) = derivados limpios.
         try {
             Map<String, BigDecimal> fresh = provider.getPrices(Arrays.asList(symbolsCsv.split(",")), fiat);
             cache.put(key, fresh, ttlMs);
@@ -58,12 +62,12 @@ public class PriceService {
         } catch (Exception e) {
             metrics.incUpstreamError("coingecko");
             log.warn("Upstream error provider=coingecko fiat={} symbols={}", fiat, symbolsCsv, e);
-            // 3) si falla proveedor y hay cache viejo, regresa stale
+            // 3) proveedor falla + hay cache viejo -> stale. Tampoco registra en
+            //    historial (no es dato nuevo, evita ensuciar la serie).
             if (entry != null) {
-                entry.prices.forEach((symbol, value) -> historyCache.add(fiat, symbol, value));
                 return Result.from(entry.prices, fiat, "stale-cache", entry.fetchedAtEpochMs);
             }
-            // 4) si no hay nada, truena (lo convertimos a 502 en controller)
+            // 4) nada que servir -> truena (502 en controller)
             throw e;
         }
     }

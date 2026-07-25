@@ -18,7 +18,7 @@ public class MarketValidator {
   private volatile Set<String> cachedFiats   = Set.of("USD", "MXN", "EUR");
   private volatile long cachedAtMs = 0;
 
-  private final long ttlMs = 30_000; // 30s cache
+  private final long ttlMs = 50_000; // 30s cache
 
   public MarketValidator(SymbolService symbols, FiatService fiats) {
     this.symbols = symbols;

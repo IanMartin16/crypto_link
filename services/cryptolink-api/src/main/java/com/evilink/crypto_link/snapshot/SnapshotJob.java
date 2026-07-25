@@ -19,7 +19,7 @@ public class SnapshotJob {
   }
 
   // ✅ 10s (“snapshot cada 10s”)
-  @Scheduled(fixedRate = 10_000)
+  @Scheduled(fixedRate = 50_000)
   public void refresh() {
     // Nota: PriceService ya tiene TTL interno (3s) y fallback stale-cache
     PriceService.Result r = priceService.getPrices(List.of("BTC", "ETH"), "USD");
