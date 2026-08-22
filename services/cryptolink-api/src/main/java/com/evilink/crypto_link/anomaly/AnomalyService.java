@@ -27,7 +27,7 @@ public class AnomalyService {
         if (usable.isEmpty()) {
             return new AnomalyResult(
                 List.of(),
-                "There is not enough historical data to assess anomalies."
+                "Not enough recent history yet to judge what counts as unusual."
             );
         }
 
@@ -53,12 +53,12 @@ public class AnomalyService {
             if (unusualMove || unusualMomentum) {
                 String type = unusualMomentum ? "momentum_spike" : "unusual_move";
 
-                String severity;
                 double signalScore = Math.max(
                     avgAbsChange > 0 ? absChange / avgAbsChange : 1.0,
                     avgScore > 0 ? score / avgScore : 1.0
                 );
 
+                String severity;
                 if (signalScore >= 2.5) {
                     severity = "high";
                 } else if (signalScore >= 1.8) {
@@ -67,9 +67,15 @@ public class AnomalyService {
                     severity = "low";
                 }
 
-                String detail = unusualMomentum
-                    ? m.symbol() + " shows a significantly higher momentum than the rest of the group."
-                    : m.symbol() + " shows a significantly higher variation than the rest of the group.";
+                // TEXTO RICO: compuesto de datos REALES (magnitud, severidad, dirección),
+                // no una frase fija. Varía porque los números varían, sin inventar nada.
+                String detail = buildDetail(
+                    m.symbol(),
+                    unusualMomentum,
+                    severity,
+                    signalScore,
+                    m.changePct().doubleValue()
+                );
 
                 anomalies.add(new AnomalyRow(
                     m.symbol(),
@@ -81,11 +87,70 @@ public class AnomalyService {
             }
         }
 
-        String summary = anomalies.isEmpty()
-            ? "No relevant anomalies have been detected so far."
-            : "Movements or signals outside the recent pattern were detected.";
+        String summary = buildSummary(anomalies);
 
         return new AnomalyResult(anomalies, summary);
+    }
+
+    /**
+     * Detail construido de datos reales: cuántas veces sobre el promedio del grupo
+     * (signalScore), si es momentum o variación, la dirección, y la severidad.
+     * Dos anomalías distintas leen distinto porque SUS NÚMEROS son distintos.
+     */
+    private String buildDetail(
+        String symbol,
+        boolean isMomentum,
+        String severity,
+        double signalScore,
+        double changePct
+    ) {
+        // "2.4x" — cuántas veces por encima del promedio del grupo
+        String multiple = round(signalScore).stripTrailingZeros().toPlainString() + "x";
+
+        String dimension = isMomentum ? "momentum" : "price variation";
+
+        // dirección solo aplica de forma clara al movimiento de precio
+        String direction;
+        if (!isMomentum) {
+            direction = changePct > 0 ? " to the upside" : changePct < 0 ? " to the downside" : "";
+        } else {
+            direction = "";
+        }
+
+        // frase base según severidad — el adverbio refleja el dato, no adorno al azar
+        String intensity = switch (severity) {
+            case "high" -> "sharply";
+            case "medium" -> "clearly";
+            default -> "modestly";
+        };
+
+        // ej: "APT is running clearly ahead of the group on momentum, about 2.1x the group average."
+        // ej: "SOL is moving sharply ahead of the group on price variation to the upside, about 2.7x the group average."
+        return symbol
+            + " is running " + intensity
+            + " ahead of the group on " + dimension + direction
+            + ", about " + multiple + " the group average.";
+    }
+
+    /**
+     * Summary que refleja cuántas y de qué severidad, en vez de una frase fija.
+     */
+    private String buildSummary(List<AnomalyRow> anomalies) {
+        if (anomalies.isEmpty()) {
+            return "Nothing is moving far enough from the group to stand out right now.";
+        }
+
+        long high = anomalies.stream().filter(a -> "high".equals(a.severity())).count();
+        int total = anomalies.size();
+
+        String noun = total == 1 ? "signal" : "signals";
+
+        if (high > 0) {
+            String highNoun = high == 1 ? "one standing out strongly" : high + " standing out strongly";
+            return total + " " + noun + " outside the recent pattern, with " + highNoun + ".";
+        }
+
+        return total + " " + noun + " drifting outside the recent pattern, none extreme.";
     }
 
     private BigDecimal round(double n) {
