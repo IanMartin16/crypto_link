@@ -26,6 +26,10 @@ public class RegimeService {
         double total = 0.0;
         int count = 0;
 
+        // contadores de participación (datos reales que hoy se tiran del texto)
+        int upCount = 0;
+        int downCount = 0;
+
         for (String symbol : symbols) {
             TrendService.TrendRow tr = trends.stream()
                 .filter(x -> x.symbol().equalsIgnoreCase(symbol))
@@ -42,6 +46,9 @@ public class RegimeService {
             double strengthWeight = strengthWeight(mr == null ? "low" : mr.strength());
 
             double symbolScore = trendScore + (momentumScore * strengthWeight);
+
+            if (symbolScore > 0.15) upCount++;
+            else if (symbolScore < -0.15) downCount++;
 
             total += symbolScore;
             count++;
@@ -62,13 +69,7 @@ public class RegimeService {
 
         double confidence = Math.min(1.0, Math.abs(avg) / 1.5);
 
-        String summary = switch (state) {
-           case "bullish" -> "Momentum and trend signals support a moderately bullish bias.";
-           case "bearish" -> "Momentum and trend signals support a moderately bearish bias.";
-           case "mixed" -> "Signals indicate a mixed market with conflicting bias.";
-           default -> "Signals indicate a stable market with no dominant direction.";
-        };
-        
+        String summary = buildSummary(state, avg, confidence, upCount, downCount, count);
 
         return new RegimeResult(
             state,
@@ -76,6 +77,48 @@ public class RegimeService {
             round(confidence),
             summary
         );
+    }
+
+    /**
+     * Summary compuesto de datos reales: fuerza del sesgo (avg), confianza, y
+     * participación (cuántos suben vs bajan). Antes: una frase fija por estado.
+     */
+    private String buildSummary(String state, double avg, double confidence,
+                                int up, int down, int total) {
+        // fuerza del sesgo según magnitud del promedio
+        double mag = Math.abs(avg);
+        String strength;
+        if (mag >= 0.9) strength = "strong";
+        else if (mag >= 0.5) strength = "moderate";
+        else strength = "mild";
+
+        // confianza en lenguaje llano
+        String conf = confidence >= 0.66 ? "high" : confidence >= 0.33 ? "moderate" : "low";
+
+        // participación: cuántos del grupo acompañan la dirección
+        String participation;
+        if (total > 0) {
+            if (state.equals("bullish")) {
+                participation = up + " of " + total + " leaning up";
+            } else if (state.equals("bearish")) {
+                participation = down + " of " + total + " leaning down";
+            } else {
+                participation = up + " up / " + down + " down of " + total;
+            }
+        } else {
+            participation = "no coverage";
+        }
+
+        return switch (state) {
+            case "bullish" -> "A " + strength + " bullish lean with " + conf
+                + " confidence — " + participation + ".";
+            case "bearish" -> "A " + strength + " bearish lean with " + conf
+                + " confidence — " + participation + ".";
+            case "mixed" -> "Direction is split (" + participation
+                + "), so no clean bias — " + conf + " confidence.";
+            default -> "No dominant direction right now (" + participation
+                + ") — the group is holding roughly flat.";
+        };
     }
 
     private double directionScore(String direction) {
