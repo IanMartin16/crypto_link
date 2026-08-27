@@ -2,6 +2,7 @@ package com.evilink.crypto_link.service;
 
 import com.evilink.crypto_link.metrics.ApiMetrics;
 import com.evilink.crypto_link.history.PriceHistoryCache;
+import com.evilink.crypto_link.history.PriceHistoryRepository;
 import com.evilink.crypto_link.service.CoinGeckoPriceProvider.PricePoint;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
@@ -19,16 +20,18 @@ public class PriceService {
     private final PriceCache cache;
     private final ApiMetrics metrics;
     private final PriceHistoryCache historyCache;
+    private final PriceHistoryRepository priceHistoryRepository;
     private static final Logger log = LoggerFactory.getLogger(PriceService.class);
 
     // HARDENING previo (se mantiene): fuente actualiza ~60s -> TTL 50s.
     private final long ttlMs = 50_000;
 
-    public PriceService(CoinGeckoPriceProvider provider, PriceCache cache, ApiMetrics metrics, PriceHistoryCache historyCache) {
+    public PriceService(CoinGeckoPriceProvider provider, PriceCache cache, ApiMetrics metrics, PriceHistoryCache historyCache, PriceHistoryRepository priceHistoryRepository) {
         this.provider = provider;
         this.cache = cache;
         this.metrics = metrics;
         this.historyCache = historyCache;
+        this.priceHistoryRepository = priceHistoryRepository;
     }
 
     public Result getPrices(List<String> symbols, String fiat) {
@@ -53,9 +56,18 @@ public class PriceService {
         try {
             Map<String, PricePoint> fresh = provider.getPricesRich(Arrays.asList(symbolsCsv.split(",")), fiat);
             cache.put(key, fresh, ttlMs);
-            // HARDENING intacto: el historial recibe SOLO el precio (los derivados
-            // usan precio, no 24h). Un punto por cambio real.
-            fresh.forEach((symbol, p) -> historyCache.add(fiat, symbol, p.price));
+
+            // HARDENING intacto: el buffer en memoria recibe SOLO el precio (los derivados
+            // usan precio). La BD recibe el dato rico (price + 24h + marketCap).
+            OffsetDateTime now2 = OffsetDateTime.now();
+            fresh.forEach((symbol, p) -> {
+                historyCache.add(fiat, symbol, p.price);
+                priceHistoryRepository.save(
+                    fiat.toUpperCase(), symbol.toUpperCase(),
+                    p.price, p.change24h, p.marketCap, now2
+                );
+            });
+
             return Result.from(fresh, fiat, "coingecko", System.currentTimeMillis());
         } catch (Exception e) {
             metrics.incUpstreamError("coingecko");

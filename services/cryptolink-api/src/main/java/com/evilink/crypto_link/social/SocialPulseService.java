@@ -188,7 +188,7 @@ public class SocialPulseService {
             .map(TrendService.TrendRow::symbol)
             .forEach(out::add);
 
-        return out.stream().limit(3).collect(Collectors.toList());
+        return out.stream().limit(5).collect(Collectors.toList());
     }
 
     private List<String> buildTags(
