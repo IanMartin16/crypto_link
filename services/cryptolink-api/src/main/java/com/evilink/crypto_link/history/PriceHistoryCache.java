@@ -27,29 +27,30 @@ public class PriceHistoryCache {
     private final Map<String, Deque<Point>> series = new ConcurrentHashMap<>();
     private static final int MAX_POINTS = 24;
 
-    public void add(String fiat, String symbol, BigDecimal value) {
-    if (fiat == null || symbol == null || value == null) return;
+    public boolean add(String fiat, String symbol, BigDecimal value) {
+        if (fiat == null || symbol == null || value == null) return false;
 
-    String key = fiat.toUpperCase() + ":" + symbol.toUpperCase();
-    Deque<Point> q = series.computeIfAbsent(key, k -> new ArrayDeque<>());
+        String key = fiat.toUpperCase() + ":" + symbol.toUpperCase();
+        Deque<Point> q = series.computeIfAbsent(key, k -> new ArrayDeque<>());
 
-    synchronized (q) {
-        // ✅ evita duplicados consecutivos
-        if (!q.isEmpty()) {
-            Point last = q.peekLast();
-            if (last != null && last.v != null && last.v.compareTo(value) == 0) {
-                return;
+        synchronized (q) {
+            // evita duplicados consecutivos
+            if (!q.isEmpty()) {
+                Point last = q.peekLast();
+                if (last != null && last.v != null && last.v.compareTo(value) == 0) {
+                    return false;   // <-- duplicado: no agregó
+                }
             }
-        }
 
-        q.addLast(new Point(Instant.now().toString(), value));
+            q.addLast(new Point(Instant.now().toString(), value));
 
-        while (q.size() > MAX_POINTS) {
-            q.removeFirst();
+            while (q.size() > MAX_POINTS) {
+                q.removeFirst();
+            }
+            return true;            // <-- agregó punto nuevo
         }
     }
-}
-
+    
     public List<Point> get(String fiat, String symbol) {
         String key = fiat.toUpperCase() + ":" + symbol.toUpperCase();
         Deque<Point> q = series.get(key);

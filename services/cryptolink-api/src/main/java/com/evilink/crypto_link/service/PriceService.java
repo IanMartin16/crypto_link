@@ -61,11 +61,18 @@ public class PriceService {
             // usan precio). La BD recibe el dato rico (price + 24h + marketCap).
             OffsetDateTime now2 = OffsetDateTime.now();
             fresh.forEach((symbol, p) -> {
-                historyCache.add(fiat, symbol, p.price);
-                priceHistoryRepository.save(
-                    fiat.toUpperCase(), symbol.toUpperCase(),
-                    p.price, p.change24h, p.marketCap, now2
-                );
+                boolean isNew = historyCache.add(fiat, symbol, p.price);
+                if (isNew) {
+                    try {
+                        priceHistoryRepository.save(
+                            fiat.toUpperCase(), symbol.toUpperCase(),
+                            p.price, p.change24h, p.marketCap, now2
+                        );
+                    } catch (Exception e) {
+                        log.warn("price_history save failed symbol={} : {}", symbol, e.getMessage());
+                    }
+                }
+                // si isNew == false, precio idéntico al último -> NO se persiste
             });
 
             return Result.from(fresh, fiat, "coingecko", System.currentTimeMillis());
