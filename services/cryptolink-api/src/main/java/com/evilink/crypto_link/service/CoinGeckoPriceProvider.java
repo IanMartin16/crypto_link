@@ -1,9 +1,13 @@
 package com.evilink.crypto_link.service;
 
+import com.evilink.crypto_link.history.HistoricalPriceJob;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
+import java.time.Instant;      // solo si acortas java.time.Instant a Instant
+import java.time.ZoneOffset;   // solo si acortas java.time.ZoneOffset a ZoneOffset
 import java.util.*;
 
 /**
@@ -128,4 +132,58 @@ public class CoinGeckoPriceProvider {
 
     return out;
   }
+
+  @SuppressWarnings("unchecked")
+  public Map<String, HistoryPoint> getPricesForHistory(List<String> symbols, String fiat) {
+    Map<String,String> symToId = symbolService.listActiveSymbolToCoingeckoId();
+    String vs = fiat.toLowerCase();
+
+    List<String> norm = symbols.stream()
+      .filter(Objects::nonNull).map(s -> s.trim().toUpperCase())
+      .filter(s -> !s.isBlank()).distinct().toList();
+
+    String ids = norm.stream()
+      .map(symToId::get).filter(id -> id != null && !id.isBlank())
+      .distinct().reduce((a,b) -> a + "," + b).orElse("");
+    if (ids.isBlank()) return Map.of();
+
+    final String idsFinal = ids;
+    Map<String,Object> resp = coingecko.get()
+      .uri(u -> u.path("/simple/price")
+        .queryParam("ids", idsFinal)
+        .queryParam("vs_currencies", vs)
+        .queryParam("include_24hr_change", "true")
+        .queryParam("include_market_cap", "true")
+        .queryParam("include_24hr_vol", "true")           // ← NUEVO: volumen
+        .queryParam("include_last_updated_at", "true")    // ← NUEVO: source ts
+        .build())
+      .retrieve().body(Map.class);
+    if (resp == null) return Map.of();
+
+    Map<String,String> idToSym = new HashMap<>();
+    for (String sym : norm) { String id = symToId.get(sym); if (id != null) idToSym.put(id, sym); }
+
+    Map<String, HistoryPoint> out = new LinkedHashMap<>();
+    for (var e : resp.entrySet()) {
+      if (!(e.getValue() instanceof Map<?,?> row)) continue;
+      Object priceObj = row.get(vs);
+      if (!(priceObj instanceof Number priceNum)) continue;
+
+      BigDecimal price = BigDecimal.valueOf(priceNum.doubleValue());
+      BigDecimal mcap  = (row.get(vs+"_market_cap") instanceof Number n) ? BigDecimal.valueOf(n.doubleValue()) : null;
+      BigDecimal vol   = (row.get(vs+"_24h_vol")     instanceof Number n) ? BigDecimal.valueOf(n.doubleValue()) : null;
+      BigDecimal chg   = (row.get(vs+"_24h_change")  instanceof Number n) ? BigDecimal.valueOf(n.doubleValue()) : null;
+      // last_updated_at viene como epoch seconds (Number)
+      OffsetDateTime srcTs = (row.get("last_updated_at") instanceof Number n)
+          ? OffsetDateTime.ofInstant(java.time.Instant.ofEpochSecond(n.longValue()), java.time.ZoneOffset.UTC)
+          : null;
+
+      String sym = idToSym.get(e.getKey());
+      if (sym != null) out.put(sym, new HistoryPoint(price, mcap, vol, chg, srcTs));
+    }
+    return out;
+  }
+
+  public record HistoryPoint(BigDecimal price, BigDecimal marketCap,
+      BigDecimal volume24h, BigDecimal change24h, OffsetDateTime sourceUpdatedAt) {}
 }
