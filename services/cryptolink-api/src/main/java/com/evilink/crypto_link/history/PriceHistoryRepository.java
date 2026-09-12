@@ -60,4 +60,11 @@ public class PriceHistoryRepository {
         BigDecimal marketCap,
         OffsetDateTime capturedAt
     ) {}
+
+    public int deleteOlderThanDays(int days) {
+        return jdbc.update(
+            "DELETE FROM price_history WHERE captured_at < now() - (? || ' days')::interval",
+            days
+        );
+    }
 }

@@ -2,6 +2,7 @@ package com.evilink.crypto_link.history;
 
 import com.evilink.crypto_link.service.CoinGeckoPriceProvider;
 import com.evilink.crypto_link.service.SymbolService;
+import com.evilink.crypto_link.history.PriceHistoryRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -18,18 +19,22 @@ public class HistoricalPriceJob {
   private static final Logger log = LoggerFactory.getLogger(HistoricalPriceJob.class);
   private static final int MAX_IDS_PER_CALL = 500;   // margen bajo el tier de 515
   private static final int RETENTION_DAYS   = 90;    // 3 meses
+  private static final int PRICE_HISTORY_RETENTION_DAYS = 30;
   private static final String FIAT = "USD";
 
   private final CoinGeckoPriceProvider provider;
   private final SymbolService symbolService;
   private final HistoricalPricesRepository repo;
+  private final PriceHistoryRepository priceHistoryRepo;
 
   public HistoricalPriceJob(CoinGeckoPriceProvider provider,
                             SymbolService symbolService,
-                            HistoricalPricesRepository repo) {
+                            HistoricalPricesRepository repo,
+                            PriceHistoryRepository priceHistoryRepo) {
     this.provider = provider;
     this.symbolService = symbolService;
     this.repo = repo;
+    this.priceHistoryRepo = priceHistoryRepo;
   }
 
   /** Cada hora. fixedRate en ms. initialDelay evita correr justo al arrancar. */
@@ -77,14 +82,15 @@ public class HistoricalPriceJob {
     }
   }
 
-  /** Retención: corre 1 vez al día, borra > 90 días. Cron a las 03:00 UTC. */
-  @Scheduled(cron = "0 0 3 * * *", zone = "UTC")
-  public void cleanup() {
-    try {
-      int deleted = repo.deleteOlderThanDays(RETENTION_DAYS);
-      log.info("[historical-job] retention: deleted {} rows older than {}d", deleted, RETENTION_DAYS);
-    } catch (Exception e) {
-      log.error("[historical-job] cleanup failed: {}", e.getMessage(), e);
+    @Scheduled(cron = "0 0 3 * * *", zone = "UTC")
+    public void cleanup() {
+        try {
+            int h = repo.deleteOlderThanDays(RETENTION_DAYS);                    // historical_prices 90d
+            int p = priceHistoryRepo.deleteOlderThanDays(PRICE_HISTORY_RETENTION_DAYS); // price_history 30d
+            log.info("[retention] historical_prices deleted {} (>{}d), price_history deleted {} (>{}d)",
+                h, RETENTION_DAYS, p, PRICE_HISTORY_RETENTION_DAYS);
+        } catch (Exception e) {
+           log.error("[retention] cleanup failed: {}", e.getMessage(), e);
+        }
     }
-  }
 }
