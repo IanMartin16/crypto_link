@@ -1,59 +1,62 @@
 package com.evilink.crypto_link.momentum;
 
-import com.evilink.crypto_link.history.PriceHistoryCache;
+import com.evilink.crypto_link.history.PriceHistoryRepository;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
 @Service
 public class MomentumService {
 
-    private final PriceHistoryCache historyCache;
+    private final PriceHistoryRepository priceHistoryRepo;
 
-    public MomentumService(PriceHistoryCache historyCache) {
-        this.historyCache = historyCache;
+    // cuántos puntos leer de la BD para el cálculo de momentum.
+    // El buffer daba máx 24; con historia real podemos pedir los últimos N.
+    private static final int MOMENTUM_POINTS = 24;
+
+    public MomentumService(PriceHistoryRepository priceHistoryRepo) {
+        this.priceHistoryRepo = priceHistoryRepo;
     }
 
     public List<MomentumRow> getMomentum(List<String> symbols, String fiat) {
         List<MomentumRow> out = new ArrayList<>();
 
         for (String symbol : symbols) {
-            List<PriceHistoryCache.Point> points = historyCache.get(fiat, symbol);
+            // ANTES: List<PriceHistoryCache.Point> points = historyCache.get(fiat, symbol);
+            // AHORA: leer de price_history. findSeries devuelve DESC (reciente primero),
+            // el cálculo espera ASC (viejo->nuevo, para que get(0)=first y get(last)=last),
+            // así que invertimos.
+            List<PriceHistoryRepository.PricePointRow> rows =
+                priceHistoryRepo.findSeries(fiat, symbol.toUpperCase(), MOMENTUM_POINTS);
 
-            if (points == null || points.size() < 3) {
-               BigDecimal lastValue = null;
-               if (points != null && !points.isEmpty()) {
-                   lastValue = points.get(points.size() - 1).v;
-               }
+            // extraer solo los precios en orden cronológico ASC
+            List<BigDecimal> prices = new ArrayList<>(rows.size());
+            for (int i = rows.size() - 1; i >= 0; i--) {   // invertir DESC -> ASC
+                prices.add(rows.get(i).price());
+            }
 
-               out.add(new MomentumRow(
-                   symbol.toUpperCase(),
-                   "flat",
-                   BigDecimal.ZERO,
-                   "low",
-                   BigDecimal.ZERO,
-                   lastValue == null ? null : lastValue.setScale(2, java.math.RoundingMode.HALF_UP),
-                   "insufficient-history"
+            if (prices.size() < 3) {
+                BigDecimal lastValue = prices.isEmpty() ? null : prices.get(prices.size() - 1);
+                out.add(new MomentumRow(
+                    symbol.toUpperCase(), "flat", BigDecimal.ZERO, "low", BigDecimal.ZERO,
+                    lastValue == null ? null : lastValue.setScale(2, RoundingMode.HALF_UP),
+                    "insufficient-history"
                 ));
                 continue;
             }
 
-            BigDecimal first = points.get(0).v;
-            BigDecimal last = points.get(points.size() - 1).v;
+            BigDecimal first = prices.get(0);
+            BigDecimal last = prices.get(prices.size() - 1);
 
             if (first == null || last == null || BigDecimal.ZERO.compareTo(first) == 0) {
                 out.add(new MomentumRow(
-                    symbol.toUpperCase(),
-                    "flat",
-                    BigDecimal.ZERO,
-                    "low",
-                    BigDecimal.ZERO,
-                    last,
-                    "invalid-series"
+                    symbol.toUpperCase(), "flat", BigDecimal.ZERO, "low", BigDecimal.ZERO,
+                    last, "invalid-series"
                 ));
                 continue;
             }
@@ -65,20 +68,16 @@ public class MomentumService {
 
             String direction =
                 changePct.compareTo(BigDecimal.ZERO) > 0 ? "up" :
-                changePct.compareTo(BigDecimal.ZERO) < 0 ? "down" :
-                "flat";
+                changePct.compareTo(BigDecimal.ZERO) < 0 ? "down" : "flat";
 
             int favorableSteps = 0;
             int totalSteps = 0;
-
-            for (int i = 1; i < points.size(); i++) {
-                BigDecimal prev = points.get(i - 1).v;
-                BigDecimal curr = points.get(i).v;
+            for (int i = 1; i < prices.size(); i++) {
+                BigDecimal prev = prices.get(i - 1);
+                BigDecimal curr = prices.get(i);
                 if (prev == null || curr == null) continue;
-
                 int cmp = curr.compareTo(prev);
                 totalSteps++;
-
                 if ("up".equals(direction) && cmp > 0) favorableSteps++;
                 if ("down".equals(direction) && cmp < 0) favorableSteps++;
                 if ("flat".equals(direction) && cmp == 0) favorableSteps++;
@@ -93,22 +92,16 @@ public class MomentumService {
                 .setScale(2, RoundingMode.HALF_UP);
 
             String strength;
-            if (score.compareTo(BigDecimal.valueOf(1.00)) >= 0) {
-                strength = "high";
-            } else if (score.compareTo(BigDecimal.valueOf(0.30)) >= 0) {
-                strength = "medium";
-            } else {
-                strength = "low";
-            }
+            if (score.compareTo(BigDecimal.valueOf(1.00)) >= 0) strength = "high";
+            else if (score.compareTo(BigDecimal.valueOf(0.30)) >= 0) strength = "medium";
+            else strength = "low";
 
             out.add(new MomentumRow(
-                symbol.toUpperCase(),
-                direction,
+                symbol.toUpperCase(), direction,
                 changePct.setScale(2, RoundingMode.HALF_UP),
-                strength,
-                score,
+                strength, score,
                 last.setScale(2, RoundingMode.HALF_UP),
-                "internal-history"
+                "price-history-db"     // antes "internal-history"; marca que viene de la BD
             ));
         }
 
@@ -117,12 +110,7 @@ public class MomentumService {
     }
 
     public record MomentumRow(
-        String symbol,
-        String direction,
-        BigDecimal changePct,
-        String strength,
-        BigDecimal score,
-        BigDecimal last,
-        String source
+        String symbol, String direction, BigDecimal changePct,
+        String strength, BigDecimal score, BigDecimal last, String source
     ) {}
 }
