@@ -1,6 +1,6 @@
 package com.evilink.crypto_link.trends;
 
-import com.evilink.crypto_link.history.PriceHistoryCache;
+import com.evilink.crypto_link.history.PriceHistoryRepository;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -12,45 +12,45 @@ import java.util.List;
 @Service
 public class TrendService {
 
-    private final PriceHistoryCache historyCache;
+    private final PriceHistoryRepository priceHistoryRepo;
 
-    public TrendService(PriceHistoryCache historyCache) {
-        this.historyCache = historyCache;
+    private static final int TREND_POINTS = 24;   // igual al buffer viejo
+
+    public TrendService(PriceHistoryRepository priceHistoryRepo) {
+        this.priceHistoryRepo = priceHistoryRepo;
     }
 
     public List<TrendRow> getTrends(List<String> symbols, String fiat) {
         List<TrendRow> out = new ArrayList<>();
 
         for (String symbol : symbols) {
-            List<PriceHistoryCache.Point> points = historyCache.get(fiat, symbol);
-            if (points == null || points.size() < 3) {
-               BigDecimal lastValue = null;
-               if (points != null && !points.isEmpty()) {
-                  lastValue = points.get(points.size() - 1).v;
+            // ANTES: List<PriceHistoryCache.Point> points = historyCache.get(fiat, symbol);
+            // AHORA: leer de price_history (persistente). findSeries devuelve DESC → invertir a ASC.
+            List<PriceHistoryRepository.PricePointRow> rows =
+                priceHistoryRepo.findSeries(fiat, symbol.toUpperCase(), TREND_POINTS);
+
+            List<BigDecimal> prices = new ArrayList<>(rows.size());
+            for (int i = rows.size() - 1; i >= 0; i--) {   // DESC → ASC
+                prices.add(rows.get(i).price());
             }
 
-            out.add(new TrendRow(
-               symbol.toUpperCase(),
-               "flat",
-               BigDecimal.ZERO,
-               BigDecimal.ZERO,
-               lastValue == null ? null : lastValue.setScale(2, RoundingMode.HALF_UP),
-               "insufficient-history"
-            ));
-            continue;
-        }
+            if (prices.size() < 3) {
+                BigDecimal lastValue = prices.isEmpty() ? null : prices.get(prices.size() - 1);
+                out.add(new TrendRow(
+                    symbol.toUpperCase(), "flat", BigDecimal.ZERO, BigDecimal.ZERO,
+                    lastValue == null ? null : lastValue.setScale(2, RoundingMode.HALF_UP),
+                    "insufficient-history"
+                ));
+                continue;
+            }
 
-            BigDecimal first = points.get(0).v;
-            BigDecimal last = points.get(points.size() - 1).v;
+            BigDecimal first = prices.get(0);
+            BigDecimal last = prices.get(prices.size() - 1);
 
             if (first == null || last == null || BigDecimal.ZERO.compareTo(first) == 0) {
                 out.add(new TrendRow(
-                    symbol.toUpperCase(),
-                    "flat",
-                    BigDecimal.ZERO,
-                    BigDecimal.ZERO,
-                    last,
-                    "invalid-series"
+                    symbol.toUpperCase(), "flat", BigDecimal.ZERO, BigDecimal.ZERO,
+                    last, "invalid-series"
                 ));
                 continue;
             }
@@ -63,24 +63,18 @@ public class TrendService {
             String direction;
             int cmpUp = changePct.compareTo(BigDecimal.valueOf(0.20));
             int cmpDown = changePct.compareTo(BigDecimal.valueOf(-0.20));
-
-            if (cmpUp > 0) {
-                direction = "up";
-            } else if (cmpDown < 0) {
-                direction = "down";
-            } else {
-                direction = "flat";
-            }
+            if (cmpUp > 0) direction = "up";
+            else if (cmpDown < 0) direction = "down";
+            else direction = "flat";
 
             BigDecimal score = changePct.abs().setScale(2, RoundingMode.HALF_UP);
 
             out.add(new TrendRow(
-                symbol.toUpperCase(),
-                direction,
+                symbol.toUpperCase(), direction,
                 changePct.setScale(2, RoundingMode.HALF_UP),
                 score,
                 last.setScale(2, RoundingMode.HALF_UP),
-                "internal-history"
+                "price-history-db"     // antes "internal-history"
             ));
         }
 
@@ -89,11 +83,7 @@ public class TrendService {
     }
 
     public record TrendRow(
-        String symbol,
-        String direction,
-        BigDecimal changePct,
-        BigDecimal score,
-        BigDecimal last,
-        String source
+        String symbol, String direction, BigDecimal changePct,
+        BigDecimal score, BigDecimal last, String source
     ) {}
 }
