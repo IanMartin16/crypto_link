@@ -60,6 +60,24 @@ public class HistoricalPricesRepository {
         });
     }
 
+    public List<BigDecimal> findPriceSeries(String fiat, String symbol, int limit) {
+        return jdbc.query(
+            "SELECT price FROM historical_prices " +
+            "WHERE fiat = ? AND symbol = ? " +
+            "ORDER BY captured_at DESC LIMIT ?",
+            (rs, rowNum) -> rs.getBigDecimal("price"),
+            fiat, symbol, limit
+        );
+    }
+
+    /** Todos los símbolos distintos que hay en historical_prices para un fiat. */
+    public List<String> findSymbols(String fiat) {
+        return jdbc.queryForList(
+            "SELECT DISTINCT symbol FROM historical_prices WHERE fiat = ? ORDER BY symbol",
+            String.class, fiat
+        );
+    }
+
     /** Retención: borra lo más viejo que N días. Rápido por el índice (captured_at). */
     public int deleteOlderThanDays(int days) {
         return jdbc.update(
