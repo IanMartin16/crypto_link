@@ -78,6 +78,47 @@ public class HistoricalPricesRepository {
         );
     }
 
+    public List<OverviewRow> findLatestPerSymbol(String fiat) {
+        return jdbc.query(
+            "SELECT DISTINCT ON (symbol) symbol, price, change_24h, volume_24h, " +
+            "       market_cap, captured_at " +
+            "FROM historical_prices WHERE fiat = ? " +
+            "ORDER BY symbol, captured_at DESC",
+            (rs, n) -> new OverviewRow(
+                rs.getString("symbol"),
+                rs.getBigDecimal("price"),
+                rs.getBigDecimal("change_24h"),
+                rs.getBigDecimal("volume_24h"),
+                rs.getBigDecimal("market_cap"),
+                rs.getObject("captured_at", java.time.OffsetDateTime.class)
+            ),
+            fiat
+        );
+    }
+
+    /** Serie de precios de un símbolo con su timestamp, ASC (viejo→nuevo),
+     *  desde hace `sinceHours`. Para calcular 7d y el sparkline. */
+    public List<PricePoint> findSeriesSince(String fiat, String symbol, int sinceHours) {
+        return jdbc.query(
+            "SELECT price, captured_at FROM historical_prices " +
+            "WHERE fiat = ? AND symbol = ? AND captured_at >= now() - (? || ' hours')::interval " +
+            "ORDER BY captured_at ASC",
+            (rs, n) -> new PricePoint(
+                rs.getBigDecimal("price"),
+                rs.getObject("captured_at", java.time.OffsetDateTime.class)
+            ),
+            fiat, symbol, sinceHours
+        );
+    }
+
+    public record OverviewRow(
+        String symbol, BigDecimal price, BigDecimal change24h,
+        BigDecimal volume24h, BigDecimal marketCap,
+        java.time.OffsetDateTime capturedAt
+    ) {}
+
+    public record PricePoint(BigDecimal price, java.time.OffsetDateTime capturedAt) {}
+
     /** Retención: borra lo más viejo que N días. Rápido por el índice (captured_at). */
     public int deleteOlderThanDays(int days) {
         return jdbc.update(
