@@ -18,12 +18,27 @@ public class BreadthService {
     // mínimo de puntos para considerar un símbolo "con serie válida".
     // Menos que esto = estable/sin-datos (USYC) → se excluye, no penaliza.
     private static final int MIN_POINTS = 12;
+    private volatile BreadthResult cached;
+    private volatile long cachedAt = 0;
+    private static final long CACHE_TTL_MS = 55 * 60_000;   // 60 segundos
 
     public BreadthService(HistoricalPricesRepository repo) {
         this.repo = repo;
     }
 
     public BreadthResult getBreadth(String fiat) {
+        long now = System.currentTimeMillis();
+        BreadthResult c = cached;
+        if (c != null && (now - cachedAt) < CACHE_TTL_MS) {
+            return c;   // dato fresco (< 60s) → lo devuelve SIN tocar la BD
+        }
+        BreadthResult fresh = computeBreadth(fiat);   // calcula (250 queries)
+        cached = fresh;
+        cachedAt = now;
+        return fresh;
+    }
+
+    private BreadthResult computeBreadth(String fiat) {
         List<String> symbols = repo.findSymbols(fiat);
 
         int above = 0;     // precio actual > MA
