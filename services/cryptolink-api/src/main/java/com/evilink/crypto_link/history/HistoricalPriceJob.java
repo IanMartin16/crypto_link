@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -17,9 +18,10 @@ import java.util.Map;
 public class HistoricalPriceJob {
 
   private static final Logger log = LoggerFactory.getLogger(HistoricalPriceJob.class);
-  private static final int MAX_IDS_PER_CALL = 100;   // margen bajo el tier de 515
+  private static final int MAX_IDS_PER_CALL = 150;   // margen bajo el tier de 515
   private static final int RETENTION_DAYS   = 90;    // 3 meses
   private static final int PRICE_HISTORY_RETENTION_DAYS = 30;
+  private static final int BATCH_SIZE = 100;   
   private static final String FIAT = "USD";
 
   private final CoinGeckoPriceProvider provider;
@@ -41,7 +43,6 @@ public class HistoricalPriceJob {
   @Scheduled(fixedRate = 3_600_000, initialDelay = 60_000)
   public void run() {
     try {
-      // lista canónica DINÁMICA: todos los símbolos activos (crece solo al agregar)
       List<String> symbols = new ArrayList<>(
           symbolService.listActiveSymbolToCoingeckoId().keySet());
 
@@ -50,19 +51,33 @@ public class HistoricalPriceJob {
         return;
       }
 
-      // SALVAGUARDA del tier: si algún día superamos MAX_IDS_PER_CALL, avisar y
-      // recortar (paginación completa se agrega cuando de verdad se acerque a 500).
-      if (symbols.size() > MAX_IDS_PER_CALL) {
-        log.warn("[historical-job] {} symbols exceeds MAX_IDS_PER_CALL={} — truncating; add pagination soon",
-            symbols.size(), MAX_IDS_PER_CALL);
-        symbols = symbols.subList(0, MAX_IDS_PER_CALL);
+      // paginar: dividir en lotes de BATCH_SIZE y consultar cada uno
+      Map<String, CoinGeckoPriceProvider.HistoryPoint> data = new LinkedHashMap<>();
+      int batches = 0, failed = 0;
+      for (int i = 0; i < symbols.size(); i += BATCH_SIZE) {
+        List<String> batch = symbols.subList(i, Math.min(i + BATCH_SIZE, symbols.size()));
+        try {
+          Map<String, CoinGeckoPriceProvider.HistoryPoint> part =
+              provider.getPricesForHistory(batch, FIAT);
+          data.putAll(part);
+          batches++;
+          // pausa pequeña entre lotes: evita ráfaga que dispare rate limit / bloqueo
+          if (i + BATCH_SIZE < symbols.size()) {
+            try { Thread.sleep(1500); } catch (InterruptedException ie) {
+              Thread.currentThread().interrupt();
+              break;
+            }
+          }
+        } catch (Exception be) {
+          // un lote que falla no tumba los demás (best-effort por lote)
+          failed++;
+          log.warn("[historical-job] batch {}-{} failed: {}",
+              i, Math.min(i + BATCH_SIZE, symbols.size()), be.getMessage());
+        }
       }
 
-      Map<String, CoinGeckoPriceProvider.HistoryPoint> data =
-          provider.getPricesForHistory(symbols, FIAT);
-
       if (data.isEmpty()) {
-        log.warn("[historical-job] fetch returned empty, nothing to persist");
+        log.warn("[historical-job] all batches empty/failed, nothing to persist");
         return;
       }
 
@@ -74,10 +89,10 @@ public class HistoricalPriceJob {
       )));
 
       repo.saveAll(rows);
-      log.info("[historical-job] persisted {} symbols @ {}", rows.size(), capturedAt);
+      log.info("[historical-job] persisted {} symbols in {} batches ({} failed) @ {}",
+          rows.size(), batches, failed, capturedAt);
 
     } catch (Exception e) {
-      // best-effort: un fallo del job NO debe tumbar la app (el precio en vivo sigue)
       log.error("[historical-job] failed: {}", e.getMessage(), e);
     }
   }
