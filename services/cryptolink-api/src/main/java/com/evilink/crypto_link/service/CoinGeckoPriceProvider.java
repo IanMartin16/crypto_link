@@ -3,11 +3,12 @@ package com.evilink.crypto_link.service;
 import com.evilink.crypto_link.history.HistoricalPriceJob;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
-import java.time.Instant;      // solo si acortas java.time.Instant a Instant
-import java.time.ZoneOffset;   // solo si acortas java.time.ZoneOffset a ZoneOffset
+import java.time.Instant;      
+import java.time.ZoneOffset;   
 import java.util.*;
 
 /**
@@ -25,10 +26,15 @@ public class CoinGeckoPriceProvider {
 
   private final RestClient coingecko;
   private final SymbolService symbolService;
+  private final String demoKey;
 
-  public CoinGeckoPriceProvider(RestClient coingeckoRestClient, SymbolService symbolService) {
+  public CoinGeckoPriceProvider(
+        RestClient coingeckoRestClient,
+        SymbolService symbolService,
+        @Value("${cryptolink.coingecko.demo-key:}") String demoKey) {
     this.coingecko = coingeckoRestClient;
     this.symbolService = symbolService;
+    this.demoKey = demoKey;
   }
 
   /** Dato por símbolo: precio + cambio 24h + market cap (los dos últimos opcionales). */
@@ -157,6 +163,7 @@ public class CoinGeckoPriceProvider {
         .queryParam("include_24hr_vol", "true")           // ← NUEVO: volumen
         .queryParam("include_last_updated_at", "true")    // ← NUEVO: source ts
         .build())
+        .headers(h -> { if (demoKey != null && !demoKey.isBlank()) h.set("x-cg-demo-api-key", demoKey); })
       .retrieve().body(Map.class);
     if (resp == null) return Map.of();
 
