@@ -5,6 +5,7 @@ import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -191,4 +192,100 @@ public class HistoricalPricesRepository {
         java.math.BigDecimal low, java.math.BigDecimal close, java.math.BigDecimal avgPrice,
         java.math.BigDecimal volumeAvg, java.math.BigDecimal marketCap, int points
     ) {}
+
+    // =====================================================================
+//  AÑADIR a HistoricalPricesRepository.java
+//  package com.evilink.crypto_link.history;
+// =====================================================================
+//
+//  Top Movers del UNIVERSO curado (~400), derivado de historical_prices.
+//  NO depende del rotate ni de TrendService: barre todos los símbolos del
+//  fiat y calcula el %cambio sobre una ventana (24h, 7d, lo que sea).
+//
+//  Metodología (misma para toda ventana, por honestidad):
+//    price_now   = última observación del símbolo
+//    price_then  = observación más reciente con captured_at <= now - ventana
+//                  (o sea, el precio "hace N horas")
+//    change_pct  = (price_now - price_then) / price_then * 100
+//
+//  El JOIN es INNER: si un símbolo no tiene una observación lo bastante
+//  vieja para cubrir la ventana, NO entra. Eso excluye automáticamente a
+//  los 50 nuevos del tablero 7d hasta que cumplan la semana (13-oct), sin
+//  lógica extra. Para 24h ya califican los 400 desde hoy.
+//
+//  Devuelve TODOS los que califican (sin ordenar ni recortar); el servicio
+//  decide gainers/losers, filtros de ruido y límite.
+
+/** Fila de movers del universo (un símbolo, su cambio sobre la ventana). */
+public record MoverRow(
+        String symbol,
+        BigDecimal priceNow,
+        BigDecimal priceThen,
+        BigDecimal changePct,
+        BigDecimal marketCap,
+        BigDecimal volume24h,
+        Instant atNow,
+        Instant atThen
+) {}
+
+/**
+ * Movers del universo completo para un fiat, sobre una ventana en horas.
+ *
+ * @param fiat        moneda (p.ej. "usd")
+ * @param windowHours tamaño de la ventana (24 para 24h, 168 para 7d)
+ * @return todas las filas que califican (price_then > 0), SIN ordenar
+ */
+public List<MoverRow> findUniverseMovers(String fiat, int windowHours) {
+    final String sql = """
+        WITH latest AS (
+            SELECT DISTINCT ON (symbol)
+                   symbol,
+                   price       AS price_now,
+                   market_cap  AS market_cap,
+                   volume_24h  AS volume_24h,
+                   captured_at AS at_now
+            FROM historical_prices
+            WHERE fiat = ?
+            ORDER BY symbol, captured_at DESC
+        ),
+        anchor AS (
+            SELECT DISTINCT ON (symbol)
+                   symbol,
+                   price       AS price_then,
+                   captured_at AS at_then
+            FROM historical_prices
+            WHERE fiat = ?
+              AND captured_at <= now() - (? || ' hours')::interval
+            ORDER BY symbol, captured_at DESC
+        )
+        SELECT l.symbol,
+               l.price_now,
+               a.price_then,
+               ROUND((l.price_now - a.price_then) / a.price_then * 100.0, 2) AS change_pct,
+               l.market_cap,
+               l.volume_24h,
+               l.at_now,
+               a.at_then
+        FROM latest l
+        JOIN anchor a USING (symbol)
+        WHERE a.price_then > 0
+          AND l.price_now  > 0
+        """;
+
+    return jdbc.query(
+            sql,
+            (rs, i) -> new MoverRow(
+                    rs.getString("symbol"),
+                    rs.getBigDecimal("price_now"),
+                    rs.getBigDecimal("price_then"),
+                    rs.getBigDecimal("change_pct"),
+                    rs.getBigDecimal("market_cap"),
+                    rs.getBigDecimal("volume_24h"),
+                    rs.getTimestamp("at_now").toInstant(),
+                    rs.getTimestamp("at_then").toInstant()
+            ),
+            fiat, fiat, windowHours
+    );
+}
+
 }
