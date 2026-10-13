@@ -26,7 +26,7 @@ public class MoverController {
     public ResponseEntity<?> getMovers(
         @RequestParam String symbols,
         @RequestParam(defaultValue = "USD") String fiat,
-        @RequestParam(defaultValue = "5") int limit
+        @RequestParam(defaultValue = "10") int limit
     ) {
         List<String> list = Arrays.stream(symbols.split(","))
             .map(String::trim)
