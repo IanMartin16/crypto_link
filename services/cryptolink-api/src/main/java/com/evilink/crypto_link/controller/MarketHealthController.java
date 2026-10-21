@@ -23,16 +23,21 @@ public class MarketHealthController {
 
     @GetMapping("/market-health")
     public ResponseEntity<?> getMarketHealth(
-        @RequestParam String symbols,
+        @RequestParam(required = false) String symbols,   // antes required: ahora opcional
         @RequestParam(defaultValue = "USD") String fiat
     ) {
-        List<String> list = Arrays.stream(symbols.split(","))
-            .map(String::trim)
-            .filter(s -> !s.isBlank())
-            .map(String::toUpperCase)
-            .toList();
+        List<String> list = (symbols == null || symbols.isBlank())
+            ? List.of()
+            : Arrays.stream(symbols.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isBlank())
+                .map(String::toUpperCase)
+                .toList();
 
-        var result = marketHealthService.getMarketHealth(list, fiat);
+        boolean universe = list.isEmpty();
+        var result = universe
+            ? marketHealthService.getUniverseMarketHealth(fiat)
+            : marketHealthService.getMarketHealth(list, fiat);
 
         return ResponseEntity.ok()
             .cacheControl(CacheControl.maxAge(Duration.ofSeconds(10)).cachePublic())
@@ -41,6 +46,7 @@ public class MarketHealthController {
                 "fiat", fiat.toUpperCase(),
                 "ts", OffsetDateTime.now().toString(),
                 "source", "internal-analysis",
+                "scope", universe ? "universe" : "custom",
                 "marketHealth", result
             ));
     }

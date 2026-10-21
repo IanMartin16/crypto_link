@@ -29,6 +29,18 @@ public class MarketHealthService {
         this.anomalyService = anomalyService;
     }
 
+    /**
+     * Salud sobre el universo activo (default honesto cuando no se pasan símbolos).
+     * Reusa la MISMA definición de universo que el régimen (single source of truth).
+     */
+    public MarketHealthResult getUniverseMarketHealth(String fiat) {
+        List<String> universe = regimeService.activeUniverse(fiat);
+        if (universe.isEmpty()) {
+            return new MarketHealthResult("stable", 60, "No recent market data to read.");
+        }
+        return getMarketHealth(universe, fiat);
+    }
+
     public MarketHealthResult getMarketHealth(List<String> symbols, String fiat) {
         var regime = regimeService.getRegime(symbols, fiat);
         var momentum = momentumService.getMomentum(symbols, fiat);

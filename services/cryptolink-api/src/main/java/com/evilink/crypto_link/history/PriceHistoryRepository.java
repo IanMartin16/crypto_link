@@ -54,6 +54,19 @@ public class PriceHistoryRepository {
         return n == null ? 0 : n;
     }
 
+    /**
+     * Símbolos con actividad RECIENTE (últimas `hours` horas). Es "lo que de verdad
+     * se mueve/visible" en el feed — el universo honesto para régimen y salud, en vez
+     * de 3 majors o de los ~450 curados (que no todos tienen serie en price_history).
+     */
+    public List<String> findActiveSymbols(String fiat, int hours) {
+        return jdbc.queryForList(
+            "SELECT DISTINCT symbol FROM price_history " +
+            "WHERE fiat = ? AND captured_at >= now() - (? || ' hours')::interval",
+            String.class, fiat, hours
+        );
+    }
+
     public record PricePointRow(
         BigDecimal price,
         BigDecimal change24h,

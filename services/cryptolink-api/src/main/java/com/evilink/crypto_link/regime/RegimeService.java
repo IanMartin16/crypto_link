@@ -1,5 +1,6 @@
 package com.evilink.crypto_link.regime;
 
+import com.evilink.crypto_link.history.PriceHistoryRepository;
 import com.evilink.crypto_link.momentum.MomentumService;
 import com.evilink.crypto_link.trends.TrendService;
 import org.springframework.stereotype.Service;
@@ -13,10 +14,43 @@ public class RegimeService {
 
     private final TrendService trendService;
     private final MomentumService momentumService;
+    private final PriceHistoryRepository priceHistoryRepo;   // NUEVO: fuente del universo activo
 
-    public RegimeService(TrendService trendService, MomentumService momentumService) {
+    // ventana para "qué se mueve AHORA": símbolos con datos de precio recientes.
+    // NO los ~450 curados — Trend/Momentum salen de price_history, y los símbolos
+    // sin actividad reciente no tienen señal y diluirían el promedio a neutral.
+    private static final int UNIVERSE_WINDOW_HOURS = 48;
+
+    public RegimeService(
+        TrendService trendService,
+        MomentumService momentumService,
+        PriceHistoryRepository priceHistoryRepo
+    ) {
         this.trendService = trendService;
         this.momentumService = momentumService;
+        this.priceHistoryRepo = priceHistoryRepo;
+    }
+
+    /**
+     * Universo honesto = símbolos con datos de precio recientes en price_history
+     * (lo que de verdad se mueve/visible). Definido en UN solo lugar; MarketHealth lo reusa.
+     */
+    public List<String> activeUniverse(String fiat) {
+        List<String> u = priceHistoryRepo.findActiveSymbols(fiat, UNIVERSE_WINDOW_HOURS);
+        return u == null ? List.of() : u;
+    }
+
+    /**
+     * Régimen sobre el universo activo (default honesto del endpoint cuando no se
+     * pasan símbolos). Cada símbolo tiene datos → sin dilución a neutral.
+     */
+    public RegimeResult getUniverseRegime(String fiat) {
+        List<String> universe = activeUniverse(fiat);
+        if (universe.isEmpty()) {
+            return new RegimeResult("neutral", round(0.0), round(0.0),
+                "No recent market data to read — holding flat.");
+        }
+        return getRegime(universe, fiat);
     }
 
     public RegimeResult getRegime(List<String> symbols, String fiat) {
