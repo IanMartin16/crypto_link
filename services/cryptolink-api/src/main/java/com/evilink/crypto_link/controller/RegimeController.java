@@ -23,16 +23,23 @@ public class RegimeController {
 
     @GetMapping("/regime")
     public ResponseEntity<?> getRegime(
-        @RequestParam String symbols,
+        @RequestParam(required = false) String symbols,   // antes required: ahora opcional
         @RequestParam(defaultValue = "USD") String fiat
     ) {
-        List<String> list = Arrays.stream(symbols.split(","))
-            .map(String::trim)
-            .filter(s -> !s.isBlank())
-            .map(String::toUpperCase)
-            .toList();
+        List<String> list = (symbols == null || symbols.isBlank())
+            ? List.of()
+            : Arrays.stream(symbols.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isBlank())
+                .map(String::toUpperCase)
+                .toList();
 
-        var regime = regimeService.getRegime(list, fiat);
+        // SIN símbolos = universo curado = la vista honesta del mercado (default).
+        // CON símbolos = set explícito (útil para vistas específicas / detector).
+        boolean universe = list.isEmpty();
+        var regime = universe
+            ? regimeService.getUniverseRegime(fiat)
+            : regimeService.getRegime(list, fiat);
 
         return ResponseEntity.ok()
             .cacheControl(CacheControl.maxAge(Duration.ofSeconds(10)).cachePublic())
@@ -41,6 +48,7 @@ public class RegimeController {
                 "fiat", fiat.toUpperCase(),
                 "ts", OffsetDateTime.now().toString(),
                 "source", "internal-analysis",
+                "scope", universe ? "universe" : "custom",  // honesto: dice sobre qué se calculó
                 "regime", regime
             ));
     }
