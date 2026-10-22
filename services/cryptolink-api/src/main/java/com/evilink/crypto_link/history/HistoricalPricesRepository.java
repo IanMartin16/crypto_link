@@ -193,30 +193,6 @@ public class HistoricalPricesRepository {
         java.math.BigDecimal volumeAvg, java.math.BigDecimal marketCap, int points
     ) {}
 
-    // =====================================================================
-//  AÑADIR a HistoricalPricesRepository.java
-//  package com.evilink.crypto_link.history;
-// =====================================================================
-//
-//  Top Movers del UNIVERSO curado (~400), derivado de historical_prices.
-//  NO depende del rotate ni de TrendService: barre todos los símbolos del
-//  fiat y calcula el %cambio sobre una ventana (24h, 7d, lo que sea).
-//
-//  Metodología (misma para toda ventana, por honestidad):
-//    price_now   = última observación del símbolo
-//    price_then  = observación más reciente con captured_at <= now - ventana
-//                  (o sea, el precio "hace N horas")
-//    change_pct  = (price_now - price_then) / price_then * 100
-//
-//  El JOIN es INNER: si un símbolo no tiene una observación lo bastante
-//  vieja para cubrir la ventana, NO entra. Eso excluye automáticamente a
-//  los 50 nuevos del tablero 7d hasta que cumplan la semana (13-oct), sin
-//  lógica extra. Para 24h ya califican los 400 desde hoy.
-//
-//  Devuelve TODOS los que califican (sin ordenar ni recortar); el servicio
-//  decide gainers/losers, filtros de ruido y límite.
-
-/** Fila de movers del universo (un símbolo, su cambio sobre la ventana). */
 public record MoverRow(
         String symbol,
         BigDecimal priceNow,
