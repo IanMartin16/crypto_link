@@ -104,9 +104,14 @@ public class MarketHealthService {
         score -= (int) (mediumRisk * 10);
         score -= (int) (lowRisk * 4);
 
-        // 4) Anomalies
+        // 4) Anomalies — TASA con baseline (~10-15% es cola natural, no estrés)
         long anomalyCount = anomalies.anomalies().size();
-        score -= (int) (anomalyCount * 10);
+        int n = Math.max(1, symbols.size());
+        double anomalyRate = anomalyCount / (double) n;
+        if (anomalyRate >= 0.35) score -= 20;
+        else if (anomalyRate >= 0.25) score -= 10;
+        else if (anomalyRate >= 0.18) score -= 4;
+        // < 18% = cola normal → sin penalización
 
         score = Math.max(0, Math.min(100, score));
 
