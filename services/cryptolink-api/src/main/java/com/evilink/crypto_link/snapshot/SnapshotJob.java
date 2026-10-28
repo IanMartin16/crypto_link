@@ -33,9 +33,9 @@ public class SnapshotJob {
 
     Map<String, Object> snapshot = Map.of(
         "asOf", r.ts,
-        "provider", "coingecko",
+        "provider", "price-history-db",
         "fiat", r.fiat,
-        "source", r.source,
+        "source", "price-history-db",
         "marketMood", mood,          // ← ya NO hardcodeado
         "prices", r.prices
     );

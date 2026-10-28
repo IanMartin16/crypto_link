@@ -193,7 +193,7 @@ public class HistoricalPricesRepository {
         java.math.BigDecimal volumeAvg, java.math.BigDecimal marketCap, int points
     ) {}
 
-public record MoverRow(
+    public record MoverRow(
         String symbol,
         BigDecimal priceNow,
         BigDecimal priceThen,
@@ -202,7 +202,7 @@ public record MoverRow(
         BigDecimal volume24h,
         Instant atNow,
         Instant atThen
-) {}
+    ) {}
 
 /**
  * Movers del universo completo para un fiat, sobre una ventana en horas.
@@ -211,44 +211,44 @@ public record MoverRow(
  * @param windowHours tamaño de la ventana (24 para 24h, 168 para 7d)
  * @return todas las filas que califican (price_then > 0), SIN ordenar
  */
-public List<MoverRow> findUniverseMovers(String fiat, int windowHours) {
-    final String sql = """
-        WITH latest AS (
-            SELECT DISTINCT ON (symbol)
-                   symbol,
-                   price       AS price_now,
-                   market_cap  AS market_cap,
-                   volume_24h  AS volume_24h,
-                   captured_at AS at_now
-            FROM historical_prices
-            WHERE fiat = ?
-            ORDER BY symbol, captured_at DESC
-        ),
-        anchor AS (
-            SELECT DISTINCT ON (symbol)
-                   symbol,
-                   price       AS price_then,
-                   captured_at AS at_then
-            FROM historical_prices
-            WHERE fiat = ?
-              AND captured_at <= now() - (? || ' hours')::interval
-            ORDER BY symbol, captured_at DESC
-        )
-        SELECT l.symbol,
-               l.price_now,
-               a.price_then,
-               ROUND((l.price_now - a.price_then) / a.price_then * 100.0, 2) AS change_pct,
-               l.market_cap,
-               l.volume_24h,
-               l.at_now,
-               a.at_then
-        FROM latest l
-        JOIN anchor a USING (symbol)
-        WHERE a.price_then > 0
-          AND l.price_now  > 0
-        """;
+    public List<MoverRow> findUniverseMovers(String fiat, int windowHours) {
+        final String sql = """
+            WITH latest AS (
+                SELECT DISTINCT ON (symbol)
+                        symbol,
+                        price       AS price_now,
+                        market_cap  AS market_cap,
+                        volume_24h  AS volume_24h,
+                        captured_at AS at_now
+                FROM historical_prices
+                WHERE fiat = ?
+                ORDER BY symbol, captured_at DESC
+            ),
+            anchor AS (
+                SELECT DISTINCT ON (symbol)
+                        symbol,
+                        price       AS price_then,
+                        captured_at AS at_then
+                FROM historical_prices
+                WHERE fiat = ?
+                  AND captured_at <= now() - (? || ' hours')::interval
+                ORDER BY symbol, captured_at DESC
+            )
+            SELECT l.symbol,
+                    l.price_now,
+                    a.price_then,
+                    ROUND((l.price_now - a.price_then) / a.price_then * 100.0, 2) AS change_pct,
+                    l.market_cap,
+                    l.volume_24h,
+                    l.at_now,
+                    a.at_then
+            FROM latest l
+            JOIN anchor a USING (symbol)
+            WHERE a.price_then > 0
+              AND l.price_now  > 0
+            """;
 
-    return jdbc.query(
+        return jdbc.query(
             sql,
             (rs, i) -> new MoverRow(
                     rs.getString("symbol"),
@@ -261,7 +261,13 @@ public List<MoverRow> findUniverseMovers(String fiat, int windowHours) {
                     rs.getTimestamp("at_then").toInstant()
             ),
             fiat, fiat, windowHours
-    );
-}
+        );
+    }
+
+    public OffsetDateTime latestCapturedAt(String fiat) {
+        return jdbc.queryForObject(
+            "SELECT max(captured_at) FROM historical_prices WHERE fiat = ?",
+            OffsetDateTime.class, fiat);
+    }
 
 }
