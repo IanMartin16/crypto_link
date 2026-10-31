@@ -1,3 +1,4 @@
+
 package com.evilink.crypto_link.trends;
 
 import com.evilink.crypto_link.history.PriceHistoryRepository;
@@ -8,82 +9,127 @@ import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 @Service
 public class TrendService {
 
     private final PriceHistoryRepository priceHistoryRepo;
 
-    private static final int TREND_POINTS = 24;   // igual al buffer viejo
+    private static final int TREND_POINTS = 24;
+
+    private static final BigDecimal DIRECTION_THRESHOLD =
+        new BigDecimal("0.20");
 
     public TrendService(PriceHistoryRepository priceHistoryRepo) {
         this.priceHistoryRepo = priceHistoryRepo;
     }
 
     public List<TrendRow> getTrends(List<String> symbols, String fiat) {
-        List<TrendRow> out = new ArrayList<>();
 
-        for (String symbol : symbols) {
-            // ANTES: List<PriceHistoryCache.Point> points = historyCache.get(fiat, symbol);
-            // AHORA: leer de price_history (persistente). findSeries devuelve DESC → invertir a ASC.
-            List<PriceHistoryRepository.PricePointRow> rows =
-                priceHistoryRepo.findSeries(fiat, symbol.toUpperCase(), TREND_POINTS);
+        if (symbols == null || symbols.isEmpty()) {
+            return List.of();
+        }
 
-            List<BigDecimal> prices = new ArrayList<>(rows.size());
-            for (int i = rows.size() - 1; i >= 0; i--) {   // DESC → ASC
-                prices.add(rows.get(i).price());
+        List<TrendRow> out = new ArrayList<>(symbols.size());
+
+        for (String requestedSymbol : symbols) {
+
+            String symbol = requestedSymbol.toUpperCase(Locale.ROOT);
+
+            // El repositorio devuelve DESC:
+            // rows[0] = observación más reciente.
+            var rows = priceHistoryRepo.findSeries(
+                fiat, symbol, TREND_POINTS
+            );
+
+            BigDecimal latestPrice = rows.isEmpty()
+                ? null
+                : rows.get(0) == null
+                    ? null
+                    : rows.get(0).price();
+
+            // Validar integridad antes de calcular.
+            boolean invalid = rows.stream().anyMatch(
+                row -> row == null
+                    || !validPrice(row.price())
+                    || row.capturedAt() == null
+            );
+
+            if (invalid) {
+                out.add(new TrendRow(
+                    symbol,
+                    "flat",
+                    BigDecimal.ZERO,
+                    BigDecimal.ZERO,
+                    validPrice(latestPrice) ? latestPrice : null,
+                    "invalid-series"
+                ));
+                continue;
             }
 
-            if (prices.size() < 3) {
-                BigDecimal lastValue = prices.isEmpty() ? null : prices.get(prices.size() - 1);
+            if (rows.size() < 3) {
                 out.add(new TrendRow(
-                    symbol.toUpperCase(), "flat", BigDecimal.ZERO, BigDecimal.ZERO,
-                    lastValue == null ? null : lastValue.setScale(2, RoundingMode.HALF_UP),
+                    symbol,
+                    "flat",
+                    BigDecimal.ZERO,
+                    BigDecimal.ZERO,
+                    latestPrice,
                     "insufficient-history"
                 ));
                 continue;
             }
 
-            BigDecimal first = prices.get(0);
-            BigDecimal last = prices.get(prices.size() - 1);
+            // No necesitamos invertir la lista:
+            // la fórmula utiliza los extremos cronológicos.
+            BigDecimal first = rows.get(rows.size() - 1).price();
+            BigDecimal last = rows.get(0).price();
 
-            if (first == null || last == null || BigDecimal.ZERO.compareTo(first) == 0) {
-                out.add(new TrendRow(
-                    symbol.toUpperCase(), "flat", BigDecimal.ZERO, BigDecimal.ZERO,
-                    last, "invalid-series"
-                ));
-                continue;
-            }
-
-            BigDecimal diff = last.subtract(first);
-            BigDecimal changePct = diff
+            BigDecimal changePct = last.subtract(first)
                 .multiply(BigDecimal.valueOf(100))
                 .divide(first, 4, RoundingMode.HALF_UP);
 
             String direction;
-            int cmpUp = changePct.compareTo(BigDecimal.valueOf(0.20));
-            int cmpDown = changePct.compareTo(BigDecimal.valueOf(-0.20));
-            if (cmpUp > 0) direction = "up";
-            else if (cmpDown < 0) direction = "down";
-            else direction = "flat";
 
-            BigDecimal score = changePct.abs().setScale(2, RoundingMode.HALF_UP);
+            if (changePct.compareTo(DIRECTION_THRESHOLD) > 0) {
+                direction = "up";
+            } else if (changePct.compareTo(
+                DIRECTION_THRESHOLD.negate()) < 0) {
+                direction = "down";
+            } else {
+                direction = "flat";
+            }
+
+            BigDecimal score = changePct.abs()
+                .setScale(2, RoundingMode.HALF_UP);
 
             out.add(new TrendRow(
-                symbol.toUpperCase(), direction,
+                symbol,
+                direction,
                 changePct.setScale(2, RoundingMode.HALF_UP),
                 score,
-                last.setScale(2, RoundingMode.HALF_UP),
-                "price-history-db"     // antes "internal-history"
+                last, // Precisión original de price_history
+                "price-history-db"
             ));
         }
 
-        out.sort(Comparator.comparing(TrendRow::score).reversed());
+        out.sort(
+            Comparator.comparing(TrendRow::score).reversed()
+        );
+
         return out;
     }
 
+    private boolean validPrice(BigDecimal price) {
+        return price != null && price.signum() > 0;
+    }
+
     public record TrendRow(
-        String symbol, String direction, BigDecimal changePct,
-        BigDecimal score, BigDecimal last, String source
+        String symbol,
+        String direction,
+        BigDecimal changePct,
+        BigDecimal score,
+        BigDecimal last,
+        String source
     ) {}
 }

@@ -21,7 +21,7 @@ public class MoverController {
         this.moverService = moverService;
     }
 
-    // ---- movers del rotate (TrendService), tal cual lo tenías ----
+    // ---- movers del rotate (TrendService) ----
     @GetMapping("/movers")
     public ResponseEntity<?> getMovers(
         @RequestParam String symbols,
@@ -48,7 +48,7 @@ public class MoverController {
             ));
     }
 
-    // ---- NUEVO: movers del UNIVERSO curado (~400), derivado de historical_prices ----
+    // ---- NUEVO: movers del UNIVERSO curado (~600), derivado de historical_prices ----
     //  GET /v1/top-movers?window=24h&fiat=USD&limit=10
     //  7d empieza a traer universo completo en cuanto los 50 nuevos cumplan la semana.
     @GetMapping("/top-movers")
