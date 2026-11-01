@@ -33,7 +33,33 @@ public class MomentumService {
             // así que invertimos.
             List<PriceHistoryRepository.PricePointRow> rows =
                 priceHistoryRepo.findSeries(fiat, symbol.toUpperCase(), MOMENTUM_POINTS);
+            
+            BigDecimal latestPrice = rows.isEmpty() || rows.get(0) == null
+                ? null
+                : rows.get(0).price();
 
+            boolean invalid = rows.stream().anyMatch(row ->
+                row == null
+                || row.price() == null
+                || row.price().signum() <= 0
+                || row.capturedAt() == null
+            );
+
+            if (invalid) {
+                out.add(new MomentumRow(
+                    symbol.toUpperCase(),
+                    "flat",
+                    BigDecimal.ZERO,
+                    "low",
+                    BigDecimal.ZERO,
+                    latestPrice != null && latestPrice.signum() > 0
+                        ? latestPrice
+                        : null,
+                    "invalid-series"
+                ));
+                continue;
+            }
+    
             // extraer solo los precios en orden cronológico ASC
             List<BigDecimal> prices = new ArrayList<>(rows.size());
             for (int i = rows.size() - 1; i >= 0; i--) {   // invertir DESC -> ASC
@@ -44,7 +70,7 @@ public class MomentumService {
                 BigDecimal lastValue = prices.isEmpty() ? null : prices.get(prices.size() - 1);
                 out.add(new MomentumRow(
                     symbol.toUpperCase(), "flat", BigDecimal.ZERO, "low", BigDecimal.ZERO,
-                    lastValue == null ? null : lastValue.setScale(2, RoundingMode.HALF_UP),
+                    lastValue,
                     "insufficient-history"
                 ));
                 continue;
@@ -100,8 +126,7 @@ public class MomentumService {
                 symbol.toUpperCase(), direction,
                 changePct.setScale(2, RoundingMode.HALF_UP),
                 strength, score,
-                last.setScale(2, RoundingMode.HALF_UP),
-                "price-history-db"     // antes "internal-history"; marca que viene de la BD
+                last, "price-history-db"     // antes "internal-history"; marca que viene de la BD
             ));
         }
 
