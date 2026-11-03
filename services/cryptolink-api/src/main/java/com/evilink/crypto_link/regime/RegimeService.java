@@ -46,25 +46,36 @@ public class RegimeService {
      */
     public RegimeResult getUniverseRegime(String fiat) {
         List<String> universe = activeUniverse(fiat);
+
         if (universe.isEmpty()) {
-            return new RegimeResult("neutral", round(0.0), round(0.0),
-                "No recent market data to read — holding flat.");
+            return new RegimeResult(
+                "neutral",
+                round(0.0),
+                round(0.0),
+                "No recent price observations available " +
+                "in the 48-hour active universe."
+            );
         }
+
         return getRegime(universe, fiat);
     }
 
     public RegimeResult getRegime(List<String> symbols, String fiat) {
-        List<TrendService.TrendRow> trends = trendService.getTrends(symbols, fiat);
-        List<MomentumService.MomentumRow> momentum = momentumService.getMomentum(symbols, fiat);
+
+        List<TrendService.TrendRow> trends =
+            trendService.getTrends(symbols, fiat);
+
+        List<MomentumService.MomentumRow> momentum =
+            momentumService.getMomentum(symbols, fiat);
 
         double total = 0.0;
         int count = 0;
 
-        // contadores de participación (datos reales que hoy se tiran del texto)
         int upCount = 0;
         int downCount = 0;
 
         for (String symbol : symbols) {
+
             TrendService.TrendRow tr = trends.stream()
                 .filter(x -> x.symbol().equalsIgnoreCase(symbol))
                 .findFirst()
@@ -75,22 +86,62 @@ public class RegimeService {
                 .findFirst()
                 .orElse(null);
 
-            double trendScore = directionScore(tr == null ? "flat" : tr.direction());
-            double momentumScore = directionScore(mr == null ? "flat" : mr.direction());
-            double strengthWeight = strengthWeight(mr == null ? "low" : mr.strength());
+            // HARDENING:
+            // Solo participan simbolos con ambas
+            // series validas en price_history.
+            boolean validTrend =
+                tr != null &&
+                "price-history-db".equals(tr.source());
 
-            double symbolScore = trendScore + (momentumScore * strengthWeight);
+            boolean validMomentum =
+                mr != null &&
+                "price-history-db".equals(mr.source());
 
-            if (symbolScore > 0.15) upCount++;
-            else if (symbolScore < -0.15) downCount++;
+            if (!validTrend || !validMomentum) {
+                continue;
+            }
+
+            double trendScore =
+                directionScore(tr.direction());
+
+            double momentumScore =
+                directionScore(mr.direction());
+
+            double strengthWeight =
+                strengthWeight(mr.strength());
+
+            // Formula original: sin cambios.
+            double symbolScore =
+                trendScore +
+                (momentumScore * strengthWeight);
+
+            if (symbolScore > 0.15) {
+                upCount++;
+            } else if (symbolScore < -0.15) {
+                downCount++;
+            }
 
             total += symbolScore;
             count++;
         }
 
-        double avg = count == 0 ? 0.0 : total / count;
+        // Sin simbolos evaluables no existe
+        // una clasificacion calculada.
+        if (count == 0) {
+            return new RegimeResult(
+                "neutral",
+                round(0.0),
+                round(0.0),
+                "Insufficient valid price history " +
+                "to evaluate market regime."
+            );
+        }
+
+        // Promedio sobre simbolos evaluables.
+        double avg = total / count;
 
         String state;
+
         if (avg >= 0.75) {
             state = "bullish";
         } else if (avg <= -0.75) {
@@ -101,9 +152,18 @@ public class RegimeService {
             state = "mixed";
         }
 
-        double confidence = Math.min(1.0, Math.abs(avg) / 1.5);
+        // Formula original: sin cambios.
+        double confidence =
+            Math.min(1.0, Math.abs(avg) / 1.5);
 
-        String summary = buildSummary(state, avg, confidence, upCount, downCount, count);
+        String summary = buildSummary(
+            state,
+            avg,
+            confidence,
+            upCount,
+            downCount,
+            count
+        );
 
         return new RegimeResult(
             state,
