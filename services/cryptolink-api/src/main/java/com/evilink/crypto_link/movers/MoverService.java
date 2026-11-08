@@ -19,23 +19,53 @@ public class MoverService {
         this.historyRepo = historyRepo;
     }
 
-    public MoversResult getMovers(List<String> symbols, String fiat, int limit) {
-        List<TrendService.TrendRow> trends = trendService.getTrends(symbols, fiat);
+    
+    public MoversResult getMovers(
+        List<String> symbols,
+        String fiat,
+        int limit
+    ) {
+        List<TrendService.TrendRow> trends =
+            trendService.getTrends(symbols, fiat);
 
-        List<TrendService.TrendRow> gainers = trends.stream()
-            .filter(t -> t.changePct() != null && t.changePct().compareTo(BigDecimal.ZERO) > 0)
-            .sorted(Comparator.comparing(TrendService.TrendRow::changePct).reversed())
-            .limit(limit)
-            .toList();
+        List<TrendService.TrendRow> validTrends =
+            trends.stream()
+                .filter(t ->
+                    "price-history-db".equalsIgnoreCase(
+                        t.source()))
+                    .toList();
 
-        List<TrendService.TrendRow> losers = trends.stream()
-            .filter(t -> t.changePct() != null && t.changePct().compareTo(BigDecimal.ZERO) < 0)
-            .sorted(Comparator.comparing(TrendService.TrendRow::changePct))
-            .limit(limit)
-            .toList();
+        List<TrendService.TrendRow> gainers =
+            validTrends.stream()
+                .filter(t ->
+                    t.changePct() != null &&
+                    t.changePct().compareTo(
+                        BigDecimal.ZERO) > 0)
+                .sorted(
+                    Comparator.comparing(
+                        TrendService.TrendRow::changePct
+                    ).reversed()
+                )
+                .limit(limit)
+                .toList();
+
+        List<TrendService.TrendRow> losers =
+            validTrends.stream()
+                .filter(t ->
+                    t.changePct() != null &&
+                    t.changePct().compareTo(
+                        BigDecimal.ZERO) < 0)
+                .sorted(
+                    Comparator.comparing(
+                        TrendService.TrendRow::changePct
+                    )
+                )
+                .limit(limit)
+                .toList();
 
         return new MoversResult(gainers, losers);
     }
+
 
     public record MoversResult(
         List<TrendService.TrendRow> gainers,

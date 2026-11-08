@@ -270,4 +270,18 @@ public class HistoricalPricesRepository {
             OffsetDateTime.class, fiat);
     }
 
+    public List<SeriesPoint> findSeriesForCompare(String fiat, String symbol, int hours) {
+        return jdbc.query(
+            "SELECT captured_at, price FROM historical_prices " +
+            "WHERE fiat = ? AND symbol = ? " +
+            "AND captured_at >= now() - (? || ' hours')::interval " +
+            "ORDER BY captured_at ASC",
+            (rs, i) -> new SeriesPoint(
+                rs.getObject("captured_at", java.time.OffsetDateTime.class),
+                rs.getBigDecimal("price")),
+            fiat, symbol, hours);
+    }
+
+    public record SeriesPoint(java.time.OffsetDateTime capturedAt, java.math.BigDecimal price) {}
+
 }

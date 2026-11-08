@@ -208,8 +208,9 @@ public class RegimeService {
                 + " confidence — " + participation + ".";
             case "bearish" -> "A " + strength + " bearish lean with " + conf
                 + " confidence — " + participation + ".";
-            case "mixed" -> "Direction is split (" + participation
-                + "), so no clean bias — " + conf + " confidence.";
+            case "mixed" -> "No dominant aggregate regime (" +
+                participation + "); the composite score " +
+                "does not meet the bullish or bearish threshold.";
             default -> "No dominant direction right now (" + participation
                 + ") — the group is holding roughly flat.";
         };
