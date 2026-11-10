@@ -284,4 +284,68 @@ public class HistoricalPricesRepository {
 
     public record SeriesPoint(java.time.OffsetDateTime capturedAt, java.math.BigDecimal price) {}
 
+    public record BreadthPoint(java.time.OffsetDateTime t, double pctAbove, int above, int below) {}
+
+    /** Breadth (% > MA de maWindow puntos) en CADA hora de la ventana. Mismo criterio que BreadthService. */
+    public List<BreadthPoint> breadthHistory(String fiat, int hours, int maWindow, int minPoints) {
+        int fetchHours = hours + maWindow;   // extra atrás para la MA del inicio de ventana
+        final String sql = ("""
+            WITH rolled AS (
+                SELECT symbol, captured_at, price,
+                        AVG(price) OVER w AS ma,
+                        COUNT(*)   OVER w AS n
+                FROM historical_prices
+                WHERE fiat = ? AND captured_at >= now() - (? || ' hours')::interval
+                WINDOW w AS (PARTITION BY symbol ORDER BY captured_at
+                            ROWS BETWEEN %d PRECEDING AND CURRENT ROW)
+            ),
+            per_hr AS (
+                SELECT DISTINCT ON (symbol, date_trunc('hour', captured_at))
+                       date_trunc('hour', captured_at) AS hr, symbol, price, ma, n
+                FROM rolled
+                ORDER BY symbol, date_trunc('hour', captured_at), captured_at DESC
+            )
+            SELECT hr,
+                   COUNT(*) FILTER (WHERE price > ma) AS above,
+                   COUNT(*) FILTER (WHERE price < ma) AS below
+            FROM per_hr
+            WHERE n >= ?
+            GROUP BY hr
+            HAVING (COUNT(*) FILTER (WHERE price > ma) + COUNT(*) FILTER (WHERE price < ma)) > 0
+               AND hr >= date_trunc('hour', now() - (? || ' hours')::interval)
+            ORDER BY hr ASC
+            """).formatted(maWindow - 1);
+        return jdbc.query(sql, (rs, i) -> {
+            int a = rs.getInt("above"), b = rs.getInt("below");
+            double pct = (a + b) == 0 ? 0.0 : Math.round(a * 1000.0 / (a + b)) / 10.0;
+            return new BreadthPoint(rs.getObject("hr", java.time.OffsetDateTime.class), pct, a, b);
+        }, fiat, fetchHours, minPoints, hours);
+    }
+
+    public record IndexPoint(java.time.OffsetDateTime t, double value) {}
+
+    /** Índice equal-weight rebaseado a 100 (cada símbolo rebaseado a su 1er precio en ventana, promediado). */
+    public List<IndexPoint> priceIndexHistory(String fiat, int hours) {
+        final String sql = """
+            WITH win AS (
+                SELECT DISTINCT ON (symbol, date_trunc('hour', captured_at))
+                       symbol, date_trunc('hour', captured_at) AS hr, price
+                FROM historical_prices
+                WHERE fiat = ? AND captured_at >= now() - (? || ' hours')::interval
+                ORDER BY symbol, date_trunc('hour', captured_at), captured_at DESC
+            ),
+            base AS (
+                SELECT DISTINCT ON (symbol) symbol, price AS base_price
+                FROM win ORDER BY symbol, hr ASC
+            )
+            SELECT w.hr, ROUND(AVG((w.price / b.base_price) * 100.0), 2) AS idx
+            FROM win w JOIN base b USING (symbol)
+            WHERE b.base_price > 0 AND w.price > 0
+            GROUP BY w.hr
+            ORDER BY w.hr ASC
+            """;
+        return jdbc.query(sql, (rs, i) -> new IndexPoint(
+            rs.getObject("hr", java.time.OffsetDateTime.class), rs.getDouble("idx")), fiat, hours);
+    }
+
 }
