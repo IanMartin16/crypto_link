@@ -19,8 +19,8 @@ public class HistoricalPriceJob {
 
   private static final Logger log = LoggerFactory.getLogger(HistoricalPriceJob.class);
   private static final int MAX_IDS_PER_CALL = 250;   // margen bajo el tier de 515
-  private static final int RETENTION_DAYS   = 90;    // 3 meses
-  private static final int PRICE_HISTORY_RETENTION_DAYS = 30;
+  private static final int RETENTION_DAYS   = 120;    // 3 meses
+  private static final int PRICE_HISTORY_RETENTION_DAYS = 60;
   private static final int BATCH_SIZE = 150;   
   private static final String FIAT = "USD";
 

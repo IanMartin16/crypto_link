@@ -19,7 +19,7 @@ public class OverviewService {
     private final HistoricalPricesRepository repo;
 
     private static final int TOP_N = 100;              // compat: getOverview() legacy
-    private static final int MAX_RANK = 200;           // TECHO expuesto por paginación (subir a 300 luego)
+    private static final int MAX_RANK = 400;           // TECHO expuesto por paginación (subir a 300 luego)
     private static final int MAX_PAGE_SIZE = 100;
     private static final int WEEK_HOURS = 168;         // 7d
     private static final int SPARK_POINTS = 28;        // ~1 cada 6h en 7d

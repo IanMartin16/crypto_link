@@ -2,8 +2,8 @@ package com.evilink.crypto_link.security;
 
 public enum Plan {
     FREE(60, 0),
-    PRO(120, 1),
-    BUSINESS(6000, 20);
+    BUSINESS(6000, 20),
+    PRO(120, 1);
 
     public final int requestsPerMinute;
     public final int sseConnections;

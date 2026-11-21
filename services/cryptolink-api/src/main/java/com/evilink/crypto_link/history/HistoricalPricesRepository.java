@@ -347,5 +347,4 @@ public class HistoricalPricesRepository {
         return jdbc.query(sql, (rs, i) -> new IndexPoint(
             rs.getObject("hr", java.time.OffsetDateTime.class), rs.getDouble("idx")), fiat, hours);
     }
-
 }
