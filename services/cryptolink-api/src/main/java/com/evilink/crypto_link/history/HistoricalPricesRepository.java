@@ -347,4 +347,38 @@ public class HistoricalPricesRepository {
         return jdbc.query(sql, (rs, i) -> new IndexPoint(
             rs.getObject("hr", java.time.OffsetDateTime.class), rs.getDouble("idx")), fiat, hours);
     }
+
+        public List<YieldMetrics> findYieldMetrics() {
+        String sql = """
+            WITH base AS (
+              SELECT h.symbol, h.price, h.captured_at
+              FROM historical_prices h
+              JOIN cryptolink_symbols s ON upper(s.symbol) = upper(h.symbol)
+              WHERE upper(h.fiat) = 'USD'
+                AND s.rwa_type IN ('treasury','credit')
+                AND s.active = true
+                AND h.price > 0
+            )
+            SELECT symbol,
+                (array_agg(price ORDER BY captured_at DESC))[1]                                   AS px_now,
+                (array_agg(price ORDER BY captured_at DESC)
+                   FILTER (WHERE captured_at <= now() - interval '30 days'))[1]                    AS px_30,
+                percentile_cont(0.05) WITHIN GROUP (ORDER BY price)
+                   FILTER (WHERE captured_at >= now() - interval '30 days')                        AS px_p05,
+                count(DISTINCT price) FILTER (WHERE captured_at >= now() - interval '30 days')     AS niveles,
+                (max(price) > min(price))                                                         AS ever_up,
+                count(*) FILTER (WHERE captured_at <= now() - interval '30 days')                  AS has_30d
+            FROM base
+            GROUP BY symbol
+            """;
+        return jdbc.query(sql, (rs, i) -> new YieldMetrics(
+            rs.getString("symbol"),
+            rs.getBigDecimal("px_now"),
+            rs.getBigDecimal("px_30"),      // nullable (muy nuevo)
+            rs.getBigDecimal("px_p05"),
+            rs.getInt("niveles"),
+            rs.getBoolean("ever_up"),
+            rs.getInt("has_30d")
+        ));
+    }
 }
